@@ -8,6 +8,7 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.min01.gravityapi.api.GravityChangerAPI;
+import com.min01.gravityapi.api.GravityDirection;
 import com.min01.gravityapi.util.RotationUtil;
 import com.mojang.authlib.GameProfile;
 
@@ -37,16 +38,22 @@ public abstract class LocalPlayerEntityMixin extends AbstractClientPlayer {
         )
     )
     private AABB redirect_wouldCollideAt_new_0(double x1, double y1, double z1, double x2, double y2, double z2, BlockPos pos) {
-        Direction gravityDirection = GravityChangerAPI.getGravityDirection(this);
-        if (gravityDirection == Direction.DOWN) {
+        // Skip transformation for arbitrary gravity (VS ships) - use vanilla behavior
+        if (GravityChangerAPI.isArbitraryGravity(this)) {
+            return new AABB(x1, y1, z1, x2, y2, z2);
+        }
+
+        GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(this);
+        if (gravityDirection.equals(GravityDirection.DOWN)) {
             return new AABB(x1, y1, z1, x2, y2, z2);
         }
         
+        Direction nearestDir = gravityDirection.getNearestDirection();
         AABB playerBox = this.getBoundingBox();
-        Vec3 playerMask = RotationUtil.maskPlayerToWorld(0.0D, 1.0D, 0.0D, gravityDirection);
+        Vec3 playerMask = RotationUtil.maskPlayerToWorld(0.0D, 1.0D, 0.0D, nearestDir);
         AABB posBox = new AABB(pos);
-        Vec3 posMask = RotationUtil.maskPlayerToWorld(1.0D, 0.0D, 1.0D, gravityDirection);
-        
+        Vec3 posMask = RotationUtil.maskPlayerToWorld(1.0D, 0.0D, 1.0D, nearestDir);
+
         return new AABB(
             playerMask.multiply(playerBox.minX, playerBox.minY, playerBox.minZ).add(posMask.multiply(posBox.minX, posBox.minY, posBox.minZ)),
             playerMask.multiply(playerBox.maxX, playerBox.maxY, playerBox.maxZ).add(posMask.multiply(posBox.maxX, posBox.maxY, posBox.maxZ))
@@ -59,12 +66,16 @@ public abstract class LocalPlayerEntityMixin extends AbstractClientPlayer {
         cancellable = true
     )
     private void inject_pushOutOfBlocks(double x, double z, CallbackInfo ci) {
-        Direction gravityDirection = GravityChangerAPI.getGravityDirection(this);
-        if (gravityDirection == Direction.DOWN) return;
-        
+        // Skip for arbitrary gravity (VS ships) - use vanilla behavior
+        if (GravityChangerAPI.isArbitraryGravity(this)) return;
+
+        GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(this);
+        if (gravityDirection.equals(GravityDirection.DOWN)) return;
+
         ci.cancel();
         
-        Vec3 pos = RotationUtil.vecPlayerToWorld(x - this.getX(), 0.0D, z - this.getZ(), gravityDirection).add(this.position());
+        Direction nearestDir = gravityDirection.getNearestDirection();
+        Vec3 pos = RotationUtil.vecPlayerToWorld(new Vec3(x - this.getX(), 0.0D, z - this.getZ()), gravityDirection).add(this.position());
         BlockPos blockPos = BlockPos.containing(pos);
         if (this.suffocatesAt(blockPos)) {
             double dx = pos.x - (double) blockPos.getX();
@@ -75,8 +86,8 @@ public abstract class LocalPlayerEntityMixin extends AbstractClientPlayer {
             
             Direction[] directions = new Direction[]{Direction.WEST, Direction.EAST, Direction.NORTH, Direction.SOUTH};
             for (Direction playerDirection : directions) {
-                Direction worldDirection = RotationUtil.dirPlayerToWorld(playerDirection, gravityDirection);
-                
+                Direction worldDirection = RotationUtil.dirPlayerToWorld(playerDirection, nearestDir);
+
                 double g = worldDirection.getAxis().choose(dx, dy, dz);
                 double distToEdge = worldDirection.getAxisDirection() == Direction.AxisDirection.POSITIVE ? 1.0D - g : g;
                 if (distToEdge < minDistToEdge && !this.suffocatesAt(blockPos.relative(worldDirection))) {

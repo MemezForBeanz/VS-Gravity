@@ -7,6 +7,7 @@ import com.min01.gravityapi.item.GravityChangerItemAOE;
 import com.min01.gravityapi.plating.GravityPlatingItem;
 
 import net.minecraft.core.Direction;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Item.Properties;
 import net.minecraftforge.registries.DeferredRegister;
@@ -39,4 +40,7 @@ public class GravityItems
     public static final RegistryObject<Item> GRAVITY_ANCHOR_SOUTH = ITEMS.register("gravity_anchor_south", () -> new GravityAnchorItem(new Properties().stacksTo(1), Direction.SOUTH));
     public static final RegistryObject<Item> GRAVITY_ANCHOR_WEST = ITEMS.register("gravity_anchor_west", () -> new GravityAnchorItem(new Properties().stacksTo(1), Direction.WEST));
     public static final RegistryObject<Item> GRAVITY_ANCHOR_EAST = ITEMS.register("gravity_anchor_east", () -> new GravityAnchorItem(new Properties().stacksTo(1), Direction.EAST));
+
+    // Gravity Generator - Debug item for ship gravity fields
+    public static final RegistryObject<Item> GRAVITY_GENERATOR = ITEMS.register("gravity_generator", () -> new BlockItem(GravityBlocks.GRAVITY_GENERATOR.get(), new Properties()));
 }

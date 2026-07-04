@@ -163,4 +163,54 @@ public class RotationAnimation {
     public boolean isInAnimation() {
         return inAnimation;
     }
+
+    /**
+     * Start a smooth rotation animation for arbitrary gravity directions (VS ship support).
+     * This handles smooth transitions when the ship rotates but stays within the same cardinal direction.
+     */
+    public void startArbitraryRotationAnimation(
+        com.min01.gravityapi.api.GravityDirection newGravity,
+        com.min01.gravityapi.api.GravityDirection prevGravity,
+        long durationTimeMs, Entity entity, long timeMs
+    ) {
+        if (durationTimeMs == 0 || newGravity.equals(prevGravity)) {
+            return;
+        }
+
+        // For arbitrary gravity, we use shorter animation times since the changes are small
+        long actualDuration = Math.min(durationTimeMs, 100);
+
+        update(timeMs);
+
+        // Get the quaternion rotations for both gravity directions
+        Quaternionf prevRotation = new Quaternionf(prevGravity.getWorldToPlayerRotation());
+        Quaternionf newRotation = new Quaternionf(newGravity.getWorldToPlayerRotation());
+
+        // Start animation from current state
+        this.relativeRotationCenter = Vec3.ZERO;
+        inAnimation = true;
+        startGravityRotation = prevRotation;
+        endGravityRotation = newRotation;
+        startTimeMs = timeMs;
+        endTimeMs = timeMs + actualDuration;
+    }
+
+    /**
+     * Get the current gravity rotation for arbitrary gravity directions.
+     * This supports smooth interpolation for VS ship rotations.
+     */
+    public Quaternionf getCurrentGravityRotation(com.min01.gravityapi.api.GravityDirection currentGravity, long timeMs) {
+        update(timeMs);
+
+        if (!inAnimation) {
+            return new Quaternionf(currentGravity.getWorldToPlayerRotation());
+        }
+
+        double delta = (double) (timeMs - startTimeMs) / (endTimeMs - startTimeMs);
+
+        return RotationUtil.interpolate(
+            startGravityRotation, endGravityRotation,
+            mapProgress((float) delta)
+        );
+    }
 }

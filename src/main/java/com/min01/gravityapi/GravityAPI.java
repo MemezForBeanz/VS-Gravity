@@ -1,6 +1,8 @@
 package com.min01.gravityapi;
 
 import com.min01.gravityapi.capabilities.GravityCapabilities;
+import com.min01.gravityapi.compat.vs2.ShipGravityCapabilities;
+import com.min01.gravityapi.compat.vs2.VS2Integration;
 import com.min01.gravityapi.config.GravityConfig;
 import com.min01.gravityapi.init.GravityBlocks;
 import com.min01.gravityapi.init.GravityCreativeTabs;
@@ -35,6 +37,12 @@ public class GravityAPI
 
 		GravityNetwork.registerMessages();
 		MinecraftForge.EVENT_BUS.addGenericListener(Entity.class, GravityCapabilities::attachEntityCapability);
+
+		// Register VS2 ship gravity capability if VS2 is loaded
+		if (VS2Integration.isVS2Loaded()) {
+			MinecraftForge.EVENT_BUS.addGenericListener(Entity.class, ShipGravityCapabilities::attachEntityCapability);
+		}
+
 		ctx.registerConfig(Type.COMMON, GravityConfig.CONFIG_SPEC, "gravity-api.toml");
 	}
 }

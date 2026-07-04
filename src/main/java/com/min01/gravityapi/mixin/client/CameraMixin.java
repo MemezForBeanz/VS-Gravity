@@ -10,12 +10,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import com.min01.gravityapi.RotationAnimation;
 import com.min01.gravityapi.api.GravityChangerAPI;
+import com.min01.gravityapi.api.GravityDirection;
+import com.min01.gravityapi.client.GravityCameraState;
 
 import net.minecraft.client.Camera;
-import net.minecraft.client.Minecraft;
-import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.BlockGetter;
@@ -38,7 +37,7 @@ public abstract class CameraMixin {
     
     @Shadow
     private float eyeHeight;
-    
+
     @WrapOperation(
         method = "setup",
         at = @At(
@@ -52,42 +51,23 @@ public abstract class CameraMixin {
         Operation<Void> original, BlockGetter area, Entity focusedEntity,
         boolean thirdPerson, boolean inverseView, float tickDelta
     ) {
-        Direction gravityDirection = GravityChangerAPI.getGravityDirection(focusedEntity);
-        RotationAnimation animation = GravityChangerAPI.getRotationAnimation(focusedEntity);
-        
-        if (animation == null) {
+        GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(focusedEntity);
+
+        // If gravity is exactly down, use default behavior
+        if (gravityDirection.equals(GravityDirection.DOWN)) {
             original.call(this, x, y, z);
             return;
         }
         
-        float partialTick = Minecraft.getInstance().getFrameTime();
-        long timeMs = focusedEntity.level().getGameTime() * 50 + (long) (partialTick * 50);
-        animation.update(timeMs);
-        if (gravityDirection == Direction.DOWN && !animation.isInAnimation()) {
-            original.call(this, x, y, z);
-            return;
-        }
-    
-        Quaternionf gravityRotation = animation.getCurrentGravityRotation(gravityDirection, timeMs);
-        
+        // For any non-down gravity (including VS ships), use quaternion-based eye position
         double entityX = Mth.lerp((double) tickDelta, focusedEntity.xo, focusedEntity.getX());
         double entityY = Mth.lerp((double) tickDelta, focusedEntity.yo, focusedEntity.getY());
         double entityZ = Mth.lerp((double) tickDelta, focusedEntity.zo, focusedEntity.getZ());
-        
         double currentCameraY = Mth.lerp(tickDelta, this.eyeHeightOld, this.eyeHeight);
-    
-        Vec3 eyeOffset = animation.getEyeOffset(
-            gravityRotation,
-            new Vec3(0, currentCameraY, 0),
-            gravityDirection
-        );
-        
-        original.call(
-            this,
-            entityX + eyeOffset.x(),
-            entityY + eyeOffset.y(),
-            entityZ + eyeOffset.z()
-        );
+
+        // Use the exact quaternion rotation for eye offset
+        Vec3 eyeOffset = gravityDirection.vecPlayerToWorld(new Vec3(0, currentCameraY, 0));
+        original.call(this, entityX + eyeOffset.x(), entityY + eyeOffset.y(), entityZ + eyeOffset.z());
     }
     
     @Inject(
@@ -101,20 +81,30 @@ public abstract class CameraMixin {
     )
     private void inject_setRotation(CallbackInfo ci) {
         if (this.entity != null) {
-            Direction gravityDirection = GravityChangerAPI.getGravityDirection(this.entity);
-            RotationAnimation animation = GravityChangerAPI.getRotationAnimation(entity);
-            if (animation == null) {
+            GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(this.entity);
+
+            // Skip if gravity is exactly down
+            if (gravityDirection.equals(GravityDirection.DOWN)) {
                 return;
             }
-            if (gravityDirection == Direction.DOWN && !animation.isInAnimation()) {
-                return;
+
+            // Get the smoothed gravity rotation from shared state
+            // Use getLastSmoothedRotation to get the already-computed rotation
+            // (GameRendererMixin should have already updated it this frame)
+            Quaternionf smoothedGravityRot;
+            if (GravityCameraState.hasCachedRotation()) {
+                smoothedGravityRot = GravityCameraState.getLastSmoothedRotation();
+            } else {
+                // Fallback - compute it now
+                long timeMs = this.entity.level().getGameTime() * 50;
+                smoothedGravityRot = GravityCameraState.getSmoothedGravityRotation(this.entity, timeMs);
             }
-            float partialTick = Minecraft.getInstance().getFrameTime();
-            long timeMs = entity.level().getGameTime() * 50 + (long) (partialTick * 50);
-            Quaternionf rotation = new Quaternionf(animation.getCurrentGravityRotation(gravityDirection, timeMs));
-            rotation.conjugate();
-            rotation.mul(this.rotation);
-            this.rotation.set(rotation.x(), rotation.y(), rotation.z(), rotation.w());
+
+            // Apply the rotation
+            Quaternionf gravityRotation = new Quaternionf(smoothedGravityRot);
+            gravityRotation.conjugate();
+            gravityRotation.mul(this.rotation);
+            this.rotation.set(gravityRotation.x(), gravityRotation.y(), gravityRotation.z(), gravityRotation.w());
         }
     }
 }

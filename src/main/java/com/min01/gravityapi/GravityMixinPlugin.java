@@ -34,6 +34,10 @@ public class GravityMixinPlugin implements IMixinConfigPlugin
 		{
 			return false;
 		}
+		if(mixinClassName.equals("com.min01.gravityapi.mixin.compat.VS2EntityShipCollisionUtilsMixin") && LoadingModList.get().getModFileById("valkyrienskies") == null)
+		{
+			return false;
+		}
 		return true;
 	}
 

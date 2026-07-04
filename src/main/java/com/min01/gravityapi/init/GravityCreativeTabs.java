@@ -62,5 +62,8 @@ public class GravityCreativeTabs
                 output.accept(new ItemStack(GravityItems.GRAVITY_ANCHOR_WEST.get()));
                 output.accept(new ItemStack(GravityItems.GRAVITY_ANCHOR_NORTH.get()));
                 output.accept(new ItemStack(GravityItems.GRAVITY_ANCHOR_SOUTH.get()));
+
+                // Gravity Generator (VS2 compatible)
+                output.accept(new ItemStack(GravityItems.GRAVITY_GENERATOR.get()));
     		}).build());
 }

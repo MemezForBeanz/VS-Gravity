@@ -8,7 +8,11 @@ import org.joml.Vector3f;
 import com.min01.gravityapi.EntityTags;
 import com.min01.gravityapi.RotationAnimation;
 import com.min01.gravityapi.api.GravityChangerAPI;
+import com.min01.gravityapi.api.GravityDirection;
 import com.min01.gravityapi.api.RotationParameters;
+import com.min01.gravityapi.compat.vs2.ShipGravityCapabilities;
+import com.min01.gravityapi.compat.vs2.VS2Integration;
+import com.min01.gravityapi.compat.vs2.block.GravityGeneratorRegistry;
 import com.min01.gravityapi.config.GravityConfig;
 import com.min01.gravityapi.init.GravityMobEffects;
 import com.min01.gravityapi.item.GravityAnchorItem;
@@ -75,6 +79,78 @@ public class GravityCapabilityImpl implements IGravityCapability {
     private double currGravityStrength = 1.0;
     private double currentEffectPriority = Double.MIN_VALUE;
     
+    // Arbitrary gravity direction (for VS ship angles)
+    // This allows gravity in any direction, not just the 6 cardinal directions
+    @Nullable
+    private GravityDirection arbitraryGravityDirection = null;
+
+    @Nullable
+    private GravityDirection prevArbitraryGravityDirection = null;
+
+    // Flag to track if gravity is from a camera-only source (VS ship gravity generator)
+    // When true, hitbox should NOT be transformed regardless of whether direction is cardinal
+    private boolean isCameraOnlyGravity = false;
+
+    // Cached flag set during tick to indicate entity is in a gravity generator field
+    // This is checked during hitbox calculations as a reliable fallback
+    private boolean inGravityGeneratorField = false;
+
+    /**
+     * Check if the current gravity is from a VS ship/camera-only source.
+     * When true, hitbox should NOT be transformed (only camera rotates).
+     * This returns true for VS ship gravity even if the direction happens to be cardinal.
+     */
+    public boolean isArbitraryGravity() {
+        // Return true if:
+        // 1. Entity is in a gravity generator field (most reliable check), OR
+        // 2. This is camera-only gravity (VS ship gravity generator), OR
+        // 3. We have a non-cardinal arbitrary direction, OR
+        // 4. Entity is currently on a VS ship (fallback check for sync timing issues)
+        if (inGravityGeneratorField) {
+            return true;
+        }
+        if (isCameraOnlyGravity) {
+            return true;
+        }
+        if (arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal()) {
+            return true;
+        }
+        // Fallback: if entity is on a VS ship, treat as arbitrary to prevent hitbox issues
+        // This catches cases where the gravity effect hasn't synced yet
+        if (entity != null && VS2Integration.isVS2Loaded() && VS2Integration.isOnShip(entity)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * STRICT check: does this entity actually have ship-relative gravity physics active?
+     *
+     * <p>Unlike {@link #isArbitraryGravity()}, this does NOT include the "entity is merely near a
+     * VS ship" proximity fallback. The loose check is right for hitbox/camera decisions (where a
+     * false positive is harmless), but the collision pipeline (ship-local collision, ground-stick,
+     * depenetration, skipping VS2's own ship collision) must only engage when gravity is genuinely
+     * ship-relative - otherwise a normal-gravity player bumping into a ship gets VS2's collision
+     * disabled and our ship-up depenetration shoves them away from the hull (vibration/forcefield).
+     */
+    public boolean isShipGravityPhysics() {
+        return inGravityGeneratorField || isCameraOnlyGravity || arbitraryGravityDirection != null;
+    }
+
+    /**
+     * Check if entity is currently in a gravity generator field
+     */
+    public boolean isInGravityGeneratorField() {
+        return inGravityGeneratorField;
+    }
+
+    /**
+     * Set whether entity is in a gravity generator field (called during tick)
+     */
+    public void setInGravityGeneratorField(boolean inField) {
+        this.inGravityGeneratorField = inField;
+    }
+
     private boolean isFiringUpdateEvent = false;
     
     private @Nullable GravityCapabilityImpl.GravityDirEffect delayApplyDirEffect = null;
@@ -164,6 +240,9 @@ public class GravityCapabilityImpl implements IGravityCapability {
             return;
         }
         
+        // Tick ship gravity if VS2 is loaded
+        tickShipGravity();
+
         updateGravityStatus(true);
         
         applyGravityChange();
@@ -175,7 +254,29 @@ public class GravityCapabilityImpl implements IGravityCapability {
         }
     }
     
+
+    /**
+     * Tick the ship gravity capability if VS2 is present
+     */
+    private void tickShipGravity() {
+        if (!VS2Integration.isVS2Loaded()) {
+            return;
+        }
+
+        entity.getCapability(ShipGravityCapabilities.SHIP_GRAVITY).ifPresent(shipGravity -> {
+            shipGravity.tick();
+        });
+    }
+
     public void updateGravityStatus(boolean sendPacketIfNecessary) {
+        // Always check if entity is in a gravity generator field (for hitbox calculations)
+        // This needs to run even for entities that accept server sync
+        if (VS2Integration.isVS2Loaded()) {
+            GravityGeneratorRegistry.GravityFieldResult fieldResult =
+                    GravityGeneratorRegistry.getGravityFieldEffect(entity);
+            inGravityGeneratorField = (fieldResult != null);
+        }
+
         // for the remote players and non-player entities,
         // their effect data is not synchronized to the client
         // (possibly for making it harder to cheat for hacked clients)
@@ -211,6 +312,25 @@ public class GravityCapabilityImpl implements IGravityCapability {
                         );
                     }
                 }
+
+                // Check for gravity generator fields (applies to all entities)
+                GravityGeneratorRegistry.GravityFieldResult fieldResult =
+                        GravityGeneratorRegistry.getGravityFieldEffect(entity);
+
+                // Update the cached flag for hitbox calculations
+                inGravityGeneratorField = (fieldResult != null);
+
+                if (fieldResult != null) {
+                    // Use camera-only gravity for VS ships
+                    // This keeps currGravityDirection as DOWN so hitbox/physics stay normal
+                    // Only the camera and arbitrary direction are affected
+                    this.applyCameraOnlyGravityEffect(
+                            fieldResult.gravityDirection(),
+                            fieldResult.parameters(),
+                            fieldResult.priority()
+                    );
+                }
+
                 if (!(entity instanceof LivingEntity livingEntity)) {
                     return;
                 }
@@ -240,11 +360,31 @@ public class GravityCapabilityImpl implements IGravityCapability {
                     GravityMobEffects.DECREASE.get().apply(living, this);
                     GravityMobEffects.REVERSE.get().apply(living, this);
                 }
+
+
                 if (delayApplyDirEffect != null) {
-                    applyGravityDirectionEffect(
-                        delayApplyDirEffect.direction(),
-                        delayApplyDirEffect.rotationParameters(), delayApplyDirEffect.priority()
-                    );
+                    // Check if this is a camera-only effect (from VS ship gravity generator)
+                    if (delayApplyDirEffect.isCameraOnly()) {
+                        // Camera-only effect - keep direction as DOWN, only set arbitrary
+                        applyCameraOnlyGravityEffect(
+                            delayApplyDirEffect.arbitraryDirection(),
+                            delayApplyDirEffect.rotationParameters(),
+                            delayApplyDirEffect.priority()
+                        );
+                    } else if (delayApplyDirEffect.arbitraryDirection() != null) {
+                        // Full gravity effect with arbitrary direction
+                        applyGravityDirectionEffect(
+                            delayApplyDirEffect.arbitraryDirection(),
+                            delayApplyDirEffect.rotationParameters(),
+                            delayApplyDirEffect.priority()
+                        );
+                    } else {
+                        // Use cardinal direction
+                        applyGravityDirectionEffect(
+                            delayApplyDirEffect.direction(),
+                            delayApplyDirEffect.rotationParameters(), delayApplyDirEffect.priority()
+                        );
+                    }
                     delayApplyDirEffect = null;
                 }
                 currGravityStrength *= delayApplyStrengthEffect;
@@ -255,16 +395,33 @@ public class GravityCapabilityImpl implements IGravityCapability {
             }
             
             if (currentEffectPriority == Double.MIN_VALUE) {
-                // if no effect is applied, reset the rotation parameters
+                // if no effect is applied, reset the rotation parameters and arbitrary gravity
                 currentRotationParameters = RotationParameters.getDefault();
+                // Clear arbitrary gravity direction when no effect is active
+                arbitraryGravityDirection = null;
+                // Reset camera-only flag
+                isCameraOnlyGravity = false;
             }
         }
         
+        if (entity instanceof net.minecraft.world.entity.player.Player
+                && com.min01.gravityapi.compat.vs2.ShipCollisionDebug.shouldLogVerbose(entity)) {
+            com.min01.gravityapi.compat.vs2.ShipCollisionDebug.log(
+                    "[updateStatus] side={} acceptSync={} inField={} effectPriority={} cameraOnly={} currCardinal={} arbitrary={}",
+                    entity.level().isClientSide() ? "CLIENT" : "SERVER", shouldAcceptServerSync(),
+                    inGravityGeneratorField, currentEffectPriority, isCameraOnlyGravity,
+                    currGravityDirection, arbitraryGravityDirection);
+        }
+
         if (sendPacketIfNecessary) {
-            boolean changed = oldGravityDirection != currGravityDirection ||
-                Math.abs(oldGravityStrength - currGravityStrength) > 0.0001;
-            if (changed) {
+            boolean cardinalChanged = oldGravityDirection != currGravityDirection;
+            boolean strengthChanged = Math.abs(oldGravityStrength - currGravityStrength) > 0.0001;
+            // Also sync when arbitrary gravity or camera-only flag changes
+            boolean arbitraryChanged = hasArbitraryGravityChanged() || isCameraOnlyGravity;
+
+            if (cardinalChanged || strengthChanged || arbitraryChanged || needsSync) {
                 sendSyncPacketToOtherPlayers();
+                needsSync = false;
             }
         }
     }
@@ -273,16 +430,27 @@ public class GravityCapabilityImpl implements IGravityCapability {
     {
 		if(!this.entity.level.isClientSide)
 		{
-			GravityNetwork.CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> this.entity), new UpdateGravityCapabilityPacket(this.noAnimation, this.entity.getUUID(), baseGravityDirection, currGravityDirection, baseGravityStrength, currGravityStrength));
+
+			GravityNetwork.CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> this.entity),
+				new UpdateGravityCapabilityPacket(this.noAnimation, this.entity.getUUID(), baseGravityDirection, currGravityDirection, baseGravityStrength, currGravityStrength, arbitraryGravityDirection, isCameraOnlyGravity));
 		}
     }
 	
-	public void sync(boolean noAnimation, Direction baseGravityDirection, Direction currentGravityDirection, double baseGravityStrength, double currentGravityStrength)
+	@Override
+	public void sync(boolean noAnimation, Direction baseGravityDirection, Direction currentGravityDirection, double baseGravityStrength, double currentGravityStrength, @Nullable GravityDirection arbitraryGravity)
+    {
+		sync(noAnimation, baseGravityDirection, currentGravityDirection, baseGravityStrength, currentGravityStrength, arbitraryGravity, false);
+    }
+
+    @Override
+	public void sync(boolean noAnimation, Direction baseGravityDirection, Direction currentGravityDirection, double baseGravityStrength, double currentGravityStrength, @Nullable GravityDirection arbitraryGravity, boolean isCameraOnly)
     {
 		this.baseGravityDirection = baseGravityDirection;
 		this.currGravityDirection = currentGravityDirection;
 		this.baseGravityStrength = baseGravityStrength;
 		this.currGravityStrength = currentGravityStrength;
+		this.arbitraryGravityDirection = arbitraryGravity;
+		this.isCameraOnlyGravity = isCameraOnly;
 		if(noAnimation)
 		{
 			GravityChangerAPI.instantlySetClientBaseGravityDirection(this.entity, baseGravityDirection);
@@ -295,11 +463,71 @@ public class GravityCapabilityImpl implements IGravityCapability {
         @Nullable RotationParameters rotationParameters,
         double priority
     ) {
+        // Delegate to the GravityDirection version using cardinal direction
+        applyGravityDirectionEffect(GravityDirection.fromDirection(direction), rotationParameters, priority);
+    }
+
+    /**
+     * Apply a camera-only gravity effect for VS ships.
+     * This rotates the camera to match the ship orientation but does NOT affect physics.
+     * The player's movement, collisions, and hitbox remain normal (world-aligned).
+     *
+     * @param gravityDirection The arbitrary gravity direction for camera rotation
+     * @param rotationParameters Optional rotation animation parameters
+     * @param priority The priority of this effect
+     */
+    public void applyCameraOnlyGravityEffect(
+        @NotNull GravityDirection gravityDirection,
+        @Nullable RotationParameters rotationParameters,
+        double priority
+    ) {
+        // Apply angle limiting
+        GravityDirection limitedGravityDirection = applyAngleLimiting(gravityDirection);
+
         if (isFiringUpdateEvent) {
             if (priority > currentEffectPriority) {
                 currentEffectPriority = priority;
-                currGravityDirection = direction;
-                
+                // EXPLICITLY set currGravityDirection to DOWN - this ensures hitbox stays normal!
+                // The arbitrary direction is only used for camera rotation
+                currGravityDirection = Direction.DOWN;
+                arbitraryGravityDirection = limitedGravityDirection;
+                // Mark this as camera-only gravity so hitbox stays untransformed
+                isCameraOnlyGravity = true;
+
+                if (rotationParameters != null) {
+                    currentRotationParameters = rotationParameters;
+                }
+            }
+        }
+        else {
+            if (delayApplyDirEffect == null || priority > delayApplyDirEffect.priority()) {
+                // Store with DOWN as the cardinal direction and mark as camera-only
+                delayApplyDirEffect = new GravityDirEffect(
+                    Direction.DOWN, rotationParameters, priority, limitedGravityDirection, true
+                );
+            }
+        }
+    }
+
+    /**
+     * Apply an arbitrary gravity direction effect (supports any angle, not just cardinal directions)
+     * This DOES affect physics - use applyCameraOnlyGravityEffect for VS ships.
+     * Includes angle limiting to prevent sudden large gravity changes
+     */
+    public void applyGravityDirectionEffect(
+        @NotNull GravityDirection gravityDirection,
+        @Nullable RotationParameters rotationParameters,
+        double priority
+    ) {
+        // Apply angle limiting if we have a previous direction
+        GravityDirection limitedGravityDirection = applyAngleLimiting(gravityDirection);
+
+        if (isFiringUpdateEvent) {
+            if (priority > currentEffectPriority) {
+                currentEffectPriority = priority;
+                currGravityDirection = limitedGravityDirection.getNearestDirection();
+                arbitraryGravityDirection = limitedGravityDirection;
+
                 if (rotationParameters != null) {
                     currentRotationParameters = rotationParameters;
                 }
@@ -312,12 +540,77 @@ public class GravityCapabilityImpl implements IGravityCapability {
             // (the ticking order does not change according to EntityTickList)
             if (delayApplyDirEffect == null || priority > delayApplyDirEffect.priority()) {
                 delayApplyDirEffect = new GravityDirEffect(
-                    direction, rotationParameters, priority
+                    limitedGravityDirection.getNearestDirection(), rotationParameters, priority, limitedGravityDirection
                 );
             }
         }
     }
-    
+
+    /**
+     * Apply angle limiting to prevent sudden large gravity direction changes.
+     * If the angle between current and target gravity is too large, interpolate toward it.
+     */
+    private GravityDirection applyAngleLimiting(GravityDirection targetDirection) {
+        if (!GravityConfig.smoothArbitraryGravity.get()) {
+            return targetDirection;
+        }
+
+        // Get current direction to compare against
+        GravityDirection currentDirection = getCurrentGravityDirection();
+        if (currentDirection == null || currentDirection.equals(GravityDirection.DOWN) && targetDirection.equals(GravityDirection.DOWN)) {
+            return targetDirection;
+        }
+
+        // Calculate angle between current and target
+        Vec3 currentVec = currentDirection.getVector().normalize();
+        Vec3 targetVec = targetDirection.getVector().normalize();
+
+        double dot = currentVec.dot(targetVec);
+        // Clamp to avoid NaN from acos
+        dot = Math.max(-1.0, Math.min(1.0, dot));
+        double angleRadians = Math.acos(dot);
+        double angleDegrees = Math.toDegrees(angleRadians);
+
+        double maxAngle = GravityConfig.maxGravityChangeAngle.get();
+
+        // If angle is within limit, use target directly
+        if (angleDegrees <= maxAngle) {
+            return targetDirection;
+        }
+
+        // If angle is way too large (e.g., more than 90 degrees), skip this change entirely
+        // This prevents jarring gravity flips when ship rotates rapidly
+        if (angleDegrees > 90.0) {
+            return currentDirection;
+        }
+
+        // Interpolate toward target by maxAngle
+        double t = maxAngle / angleDegrees;
+        Vec3 interpolated = slerp(currentVec, targetVec, t);
+
+        return GravityDirection.fromVector(interpolated);
+    }
+
+    /**
+     * Spherical linear interpolation between two unit vectors
+     */
+    private Vec3 slerp(Vec3 v1, Vec3 v2, double t) {
+        double dot = v1.dot(v2);
+        dot = Math.max(-1.0, Math.min(1.0, dot));
+
+        double theta = Math.acos(dot);
+        if (theta < 0.001) {
+            // Vectors are nearly parallel, use linear interpolation
+            return v1.scale(1 - t).add(v2.scale(t)).normalize();
+        }
+
+        double sinTheta = Math.sin(theta);
+        double a = Math.sin((1 - t) * theta) / sinTheta;
+        double b = Math.sin(t * theta) / sinTheta;
+
+        return v1.scale(a).add(v2.scale(b)).normalize();
+    }
+
     public void applyGravityStrengthEffect(
         double strengthMultiplier
     ) {
@@ -337,9 +630,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
             return;
         }
         
-        // update bounding box
-        entity.setBoundingBox(((EntityAccessor) entity).gc_makeBoundingBox());
-        
+        // Skip bounding box update for arbitrary gravity (VS ships)
+        // The hitbox should stay unchanged when affected by gravity generators
+        if (!isArbitraryGravity()) {
+            // update bounding box only for non-arbitrary (cardinal) gravity
+            entity.setBoundingBox(((EntityAccessor) entity).gc_makeBoundingBox());
+        }
+
         // A weird thing is that,
         // using `entity.setPos(entity.position())` to a painting on client side
         // make the painting move wrongly, because Painting overrides `trackingPosition()`.
@@ -517,8 +814,55 @@ public class GravityCapabilityImpl implements IGravityCapability {
         return currGravityDirection;
     }
     
+    /**
+     * Get the arbitrary gravity direction (supports any angle).
+     * Returns null if gravity is a cardinal direction.
+     */
+    @Nullable
+    public GravityDirection getArbitraryGravityDirection() {
+        return arbitraryGravityDirection;
+    }
+
+    /**
+     * Get the current gravity as a GravityDirection object (supports any angle).
+     * This is the preferred method for getting gravity direction when supporting VS ships.
+     */
+    /**
+     * Last arbitrary (ship-aligned) gravity direction seen while the entity was inside a gravity
+     * generator field. Used to keep physics gravity stable - see {@link #getCurrentGravityDirection()}.
+     */
+    private GravityDirection lastFieldArbitrary = null;
+
+    public GravityDirection getCurrentGravityDirection() {
+        if (arbitraryGravityDirection != null) {
+            // Remember the good value while we're genuinely in a field so we can ride out transient
+            // nulls below.
+            if (inGravityGeneratorField) {
+                lastFieldArbitrary = arbitraryGravityDirection;
+            }
+            return arbitraryGravityDirection;
+        }
+        // Robustness: while standing in a gravity-generator field, arbitraryGravityDirection can be
+        // transiently null between/within ticks (effect re-evaluation and client/server sync races).
+        // If physics reads world-DOWN for even a single move sub-step, that world-down vector - run
+        // through the ship-local collision on a tilted ship - leaves an uncancelled ship-horizontal
+        // component and the entity slides off the deck. Keep returning the last known ship-aligned
+        // direction for as long as we remain in the field so every move sub-step is consistent.
+        if (inGravityGeneratorField && lastFieldArbitrary != null) {
+            return lastFieldArbitrary;
+        }
+        // Truly out of any field - forget the cached direction and use the cardinal gravity.
+        lastFieldArbitrary = null;
+        return GravityDirection.fromDirection(currGravityDirection);
+    }
+
     public double getCurrGravityStrength() {
         return currGravityStrength;
+    }
+
+    /** Diagnostic accessor: whether the active gravity effect is the camera-only (VS field) variant. */
+    public boolean isCameraOnlyGravity() {
+        return isCameraOnlyGravity;
     }
     
     private boolean canChangeGravity() {
@@ -565,19 +909,113 @@ public class GravityCapabilityImpl implements IGravityCapability {
             currentRotationParameters = RotationParameters.getDefault();
         }
         
-        if (prevGravityDirection != currGravityDirection) {
+        // Check for cardinal direction changes (legacy behavior)
+        boolean cardinalChanged = prevGravityDirection != currGravityDirection;
+
+        // Check for arbitrary gravity changes (for smooth VS ship support)
+        boolean arbitraryChanged = hasArbitraryGravityChanged();
+
+        // Check if we're transitioning from arbitrary gravity back to normal
+        boolean leavingArbitraryGravity = (prevArbitraryGravityDirection != null && arbitraryGravityDirection == null);
+
+        if (cardinalChanged) {
+            // Cardinal direction changed - use the standard animation system
             applyGravityDirectionChange(
                 prevGravityDirection, currGravityDirection,
                 currentRotationParameters, false
             );
             prevGravityDirection = currGravityDirection;
+        } else if (leavingArbitraryGravity) {
+            // Transitioning from arbitrary gravity back to normal/cardinal gravity
+            // Apply a gravity change to reset the player orientation
+            Direction targetDir = currGravityDirection;
+            Direction sourceDir = prevArbitraryGravityDirection.getNearestDirection();
+            if (sourceDir != targetDir) {
+                applyGravityDirectionChange(
+                    sourceDir, targetDir,
+                    currentRotationParameters, false
+                );
+            }
+            // NOTE: Do NOT update bounding box here - for VS ships returning to normal,
+            // the hitbox was never changed in the first place
+            entity.fallDistance = 0;
+        } else if (arbitraryChanged && arbitraryGravityDirection != null) {
+            // Only the arbitrary direction changed (ship is rotating within the same cardinal direction)
+            // Apply smooth arbitrary gravity change without full position adjustment
+            applyArbitraryGravityChange();
         }
         
+        // Track arbitrary gravity changes for smooth interpolation
+        prevArbitraryGravityDirection = arbitraryGravityDirection;
+
         if (Math.abs(currGravityStrength - prevGravityStrength) > 0.0001) {
             prevGravityStrength = currGravityStrength;
         }
     }
     
+    /**
+     * Check if the arbitrary gravity direction has changed significantly
+     */
+    private boolean hasArbitraryGravityChanged() {
+        if (arbitraryGravityDirection == null && prevArbitraryGravityDirection == null) {
+            return false;
+        }
+        if (arbitraryGravityDirection == null || prevArbitraryGravityDirection == null) {
+            return true;
+        }
+        // Compare vectors - if they're different enough, consider it changed
+        Vec3 curr = arbitraryGravityDirection.getVector();
+        Vec3 prev = prevArbitraryGravityDirection.getVector();
+        return curr.distanceToSqr(prev) > 0.0001;
+    }
+
+    /**
+     * Apply smooth arbitrary gravity changes for VS ship rotation.
+     * This handles the case where the ship rotates but stays within the same cardinal direction.
+     */
+    private void applyArbitraryGravityChange() {
+        if (!canChangeGravity() || arbitraryGravityDirection == null) {
+            return;
+        }
+
+        // NOTE: Do NOT update bounding box for arbitrary gravity changes!
+        // For VS ships, the hitbox stays world-aligned - only the camera and movement direction change.
+        // Updating the bounding box causes hitbox size/offset issues.
+
+        // Reset fall distance to prevent fall damage during smooth rotation
+        entity.fallDistance = 0;
+
+        // For smooth arbitrary gravity, we need to adjust velocity to match the new gravity frame
+        // BUT: use cardinal directions for velocity transformation since physics uses cardinal
+        if (prevArbitraryGravityDirection != null && !prevArbitraryGravityDirection.equals(arbitraryGravityDirection)) {
+            Direction prevNearest = prevArbitraryGravityDirection.getNearestDirection();
+            Direction currNearest = arbitraryGravityDirection.getNearestDirection();
+
+            // Only transform velocity if the cardinal direction changed
+            if (prevNearest != currNearest) {
+                Vec3 currentVelocity = entity.getDeltaMovement();
+
+                // Transform velocity from old gravity frame to world, then to new gravity frame
+                Vec3 worldVelocity = RotationUtil.vecPlayerToWorld(currentVelocity, prevNearest);
+                Vec3 newFrameVelocity = RotationUtil.vecWorldToPlayer(worldVelocity, currNearest);
+
+                entity.setDeltaMovement(newFrameVelocity);
+            }
+        }
+
+        // Start smooth rotation animation on client if applicable
+        if (entity.level().isClientSide() && animation != null && prevArbitraryGravityDirection != null) {
+            long timeMs = entity.level().getGameTime() * 50;
+            animation.startArbitraryRotationAnimation(
+                arbitraryGravityDirection,
+                prevArbitraryGravityDirection,
+                currentRotationParameters != null ? currentRotationParameters.rotationTimeMS() : 100,
+                entity,
+                timeMs
+            );
+        }
+    }
+
     /**
      * Not needed in normal cases.
      * Only used in {@link GravityChangerAPI#instantlySetClientBaseGravityDirection(Entity, Direction)}
@@ -591,8 +1029,22 @@ public class GravityCapabilityImpl implements IGravityCapability {
     private static record GravityDirEffect(
         @NotNull Direction direction,
         @Nullable RotationParameters rotationParameters,
-        double priority
+        double priority,
+        @Nullable GravityDirection arbitraryDirection,
+        boolean isCameraOnly
     ) {
-    
+        /**
+         * Constructor for cardinal direction only (backward compatibility)
+         */
+        public GravityDirEffect(Direction direction, RotationParameters rotationParameters, double priority) {
+            this(direction, rotationParameters, priority, null, false);
+        }
+
+        /**
+         * Constructor with arbitrary direction but not camera-only
+         */
+        public GravityDirEffect(Direction direction, RotationParameters rotationParameters, double priority, GravityDirection arbitraryDirection) {
+            this(direction, rotationParameters, priority, arbitraryDirection, false);
+        }
     }
 }

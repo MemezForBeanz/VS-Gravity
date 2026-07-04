@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:block/cube_all",
+  "textures": {
+    "all": "gravityapi:block/gravity_generator_inactive"
+  }
+}
+

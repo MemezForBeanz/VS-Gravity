@@ -104,5 +104,8 @@
   "gravity_changer.plate.wrong_interaction": "Interact with this using amethyst or bare hand",
   "gravity_changer.plate.status": "Side: %s  Range: %s  Force: %s ",
   "gravity_changer.plate.force.attract": "Attract",
-  "gravity_changer.plate.force.repulse": "Repulse"
+  "gravity_changer.plate.force.repulse": "Repulse",
+
+  "block.gravityapi.gravity_generator": "Gravity Generator",
+  "item.gravityapi.gravity_generator": "Gravity Generator"
 }

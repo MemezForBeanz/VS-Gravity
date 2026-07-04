@@ -38,6 +38,11 @@ public abstract class EntityCollisionContextMixin {
         )
     )
     private static double redirect_init_getY_0(Entity entity) {
+        // For arbitrary gravity (VS ships), skip - let VS2 handle collision context
+        if (GravityChangerAPI.isArbitraryGravity(entity)) {
+            return entity.getY();
+        }
+
         Direction gravityDirection = GravityChangerAPI.getGravityDirection(entity);
         if (gravityDirection == Direction.DOWN) {
             return entity.getY();
@@ -54,6 +59,9 @@ public abstract class EntityCollisionContextMixin {
     private void inject_isAbove(VoxelShape shape, BlockPos pos, boolean defaultValue, CallbackInfoReturnable<Boolean> cir) {
         if (this.entity == null) return;
         
+        // For arbitrary gravity (VS ships), skip - let VS2 handle collision
+        if (GravityChangerAPI.isArbitraryGravity(this.entity)) return;
+
         Direction gravityDirection = GravityChangerAPI.getGravityDirection(this.entity);
         if (gravityDirection == Direction.DOWN) return;
         

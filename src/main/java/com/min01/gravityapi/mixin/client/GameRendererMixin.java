@@ -13,6 +13,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.min01.gravityapi.RotationAnimation;
 import com.min01.gravityapi.api.GravityChangerAPI;
+import com.min01.gravityapi.api.GravityDirection;
+import com.min01.gravityapi.client.GravityCameraState;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
@@ -21,7 +23,6 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LightTexture;
-import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
@@ -53,17 +54,27 @@ public abstract class GameRendererMixin {
     private void renderLevel(float p_109090_, long p_109091_, PoseStack p_109092_, CallbackInfo ci) {
         if (this.mainCamera.getEntity() != null) {
             Entity focusedEntity = this.mainCamera.getEntity();
-            Direction gravityDirection = GravityChangerAPI.getGravityDirection(focusedEntity);
+            GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(focusedEntity);
             RotationAnimation animation = GravityChangerAPI.getRotationAnimation(focusedEntity);
-            // Only override vanilla when a gravity transform/animation is active
-            if (animation == null || (gravityDirection == Direction.DOWN && !animation.isInAnimation())) {
+
+            // Only override vanilla when gravity is not down (either cardinal or arbitrary)
+            boolean hasNonDownGravity = !gravityDirection.equals(GravityDirection.DOWN);
+            boolean hasAnimation = animation != null && animation.isInAnimation();
+
+            if (!hasNonDownGravity && !hasAnimation) {
+                // Reset the camera state when returning to normal gravity
+                GravityCameraState.reset();
                 return;
             }
             ci.cancel();
-            long timeMs = focusedEntity.level().getGameTime() * 50 + (long) (p_109090_ * 50);
-            Quaternionf currentGravityRotation = animation.getCurrentGravityRotation(gravityDirection, timeMs);
 
-			if (animation.isInAnimation()) {
+            long timeMs = focusedEntity.level().getGameTime() * 50 + (long) (p_109090_ * 50);
+
+            // Get the smoothed gravity rotation from shared state
+            Quaternionf currentGravityRotation = GravityCameraState.getSmoothedGravityRotation(focusedEntity, timeMs);
+
+
+			if (animation != null && animation.isInAnimation()) {
 				// make sure that frustum culling updates when running rotation animation
 				Minecraft.getInstance().levelRenderer.needsUpdate();
 			}

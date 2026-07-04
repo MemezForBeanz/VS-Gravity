@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "active=true": { "model": "gravityapi:block/gravity_generator_active" },
+    "active=false": { "model": "gravityapi:block/gravity_generator_inactive" }
+  }
+}
+
