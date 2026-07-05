@@ -36,6 +36,10 @@ mixin {
     config "gravityapi.mixin.json"
 }
 
+// Enable Forge Jar-in-Jar: nests our runtime deps (mixinextras/mixinsquared) inside the jar,
+// and lets other mods nest this library inside theirs the same way.
+jarJar.enable()
+
 sourceSets {
     asm {
         java {
@@ -92,10 +96,27 @@ tasks.asmJar {
 reobf {
     allJar {}
     asmJar {}
+    // Reobfuscate the jarJar output so the published artifact runs in production
+    jarJar {}
+}
+
+// The jarJar output (with nested deps) is the real distributable, so it gets no classifier
+// and becomes the main published artifact; the plain jar is published as "slim".
+tasks.named('jar', Jar).configure {
+    archiveClassifier = 'slim'
+}
+
+tasks.named('jarJar').configure {
+    archiveClassifier = ''
+    finalizedBy 'reobfJarJar'
 }
 
 // Mojang ships Java 17 to end users in 1.18+, so your mod should target Java 17.
-java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(17)
+    // Publish a sources jar so dependents get javadoc/sources for the API in their IDE
+    withSourcesJar()
+}
 
 println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
 minecraft {
@@ -333,18 +354,87 @@ tasks.named('jar', Jar).configure {
 //     dependsOn 'reobfJar'
 // }
 
-// Example configuration to allow publishing using the maven-publish plugin
+// Maven publishing.
+// Publishes the reobfuscated jarJar artifact (with nested runtime deps) plus a sources jar, so
+// other mods can depend on this library and nest it via their own Jar-in-Jar.
+//
+// Publish with:
+//   ./gradlew publishToMavenLocal              -> ~/.m2/repository (for local cross-project dev)
+//   ./gradlew publish                          -> ./mcmodsrepo (file repo) AND GitHub Packages
+//   ./gradlew publishMavenJavaPublicationToGitHubPackagesRepository -> just GitHub Packages
+//
+// GitHub Packages requires a token with the write:packages scope (read:packages to consume).
+// Supply it via ~/.gradle/gradle.properties (gpr.user / gpr.token) or the GITHUB_ACTOR /
+// GITHUB_TOKEN env vars (e.g. in a GitHub Actions workflow) -- never commit it to this repo.
+//
+// Consume from another ForgeGradle project:
+//   repositories {
+//       maven {
+//           name = "GitHubPackages"
+//           url = uri("https://maven.pkg.github.com/MemezForBeanz/VS-Gravity")
+//           credentials {
+//               username = project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")
+//               password = project.findProperty("gpr.token") ?: System.getenv("GITHUB_TOKEN")
+//           }
+//       }
+//   }
+//   dependencies {
+//       implementation fg.deobf("net.memezforbeanz.gravityapi:gravityapi:${gravityapi_version}")
+//       jarJar(group: 'net.memezforbeanz.gravityapi', name: 'gravityapi', version: "[${gravityapi_version},)")
+//   }
 publishing {
     publications {
         register('mavenJava', MavenPublication) {
-            artifact jar
+            groupId = mod_group_id
+            artifactId = mod_id
+            version = mod_version
+
+            // Publishes the jarJar output as the main artifact and strips the nested
+            // dependencies from the generated pom (consumers get them via JiJ instead)
+            jarJar.component(it)
+
+            artifact sourcesJar
+
+            pom {
+                name = mod_name
+                description = mod_description
+                licenses {
+                    license {
+                        name = mod_license
+                    }
+                }
+            }
         }
     }
     repositories {
         maven {
+            name = 'localOutput'
             url "file://${project.projectDir}/mcmodsrepo"
         }
+        // Only registered when credentials are actually available, so a plain
+        // `./gradlew publish` on a machine without a GitHub token still succeeds
+        // (it just publishes to localOutput) instead of hard-failing task configuration.
+        def ghUser = project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")
+        def ghToken = project.findProperty("gpr.token") ?: System.getenv("GITHUB_TOKEN")
+        if (ghUser && ghToken) {
+            maven {
+                name = 'GitHubPackages'
+                url = uri("https://maven.pkg.github.com/MemezForBeanz/VS-Gravity")
+                credentials {
+                    username = ghUser
+                    password = ghToken
+                }
+            }
+        }
     }
+}
+
+// The jarJar artifact is reobfuscated in place; make sure that happened before publishing
+tasks.withType(PublishToMavenRepository).configureEach {
+    dependsOn 'reobfJarJar'
+}
+tasks.withType(PublishToMavenLocal).configureEach {
+    dependsOn 'reobfJarJar'
 }
 
 tasks.withType(JavaCompile).configureEach {

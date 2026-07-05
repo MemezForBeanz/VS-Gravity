@@ -16,8 +16,8 @@ license="MIT"
 [[mods]] #mandatory
 # The modid of the mod
 modId="gravityapi" #mandatory
-# The version number of the mod
-version="1.0.0" #mandatory
+# The version number of the mod (expanded from gradle.properties by processResources)
+version="${mod_version}" #mandatory
 # A display name for the mod
 displayName="Gravity API" #mandatory
 # A URL to query for updates for this mod. See the JSON update specification https://docs.minecraftforge.net/en/latest/misc/updatechecker/
