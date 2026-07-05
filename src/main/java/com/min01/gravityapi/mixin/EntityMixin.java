@@ -169,6 +169,14 @@ public abstract class EntityMixin {
 			self.setOnGround(true);
 			self.fallDistance = 0.0F;
 
+			// Keep VS2's EntityDragger tracking this entity. Stock VS2 records lastShipStoodOn in
+			// adjustEntityMovementForShipCollisions, which VS2EntityShipCollisionUtilsMixin cancels
+			// for ship-gravity entities - so without this refresh the entity is never carried along
+			// with the ship's motion, and a moving/rotating ship slides out from under (or into) it
+			// every tick (severe clipping on fast ships). The dragger's 25-tick grace period covers
+			// jumps and brief airtime between refreshes.
+			boolean dragged = VS2Helper.markStandingOnShip(self);
+
 			// Depenetration: velocity clamping alone never recovers the slow per-tick sinking into
 			// the deck (residual un-cancelled movement, or the ship shifting under an entity VS2 no
 			// longer drags). Once the feet pass the bottom of the deck layer, the probe above stops
@@ -190,8 +198,8 @@ public abstract class EntityMixin {
 			}
 
 			if (ShipCollisionDebug.shouldLog(self) && self instanceof Player) {
-				ShipCollisionDebug.log("[groundstick] {} supported -> onGround=true, clamped dMove={}",
-						self.level().isClientSide() ? "C" : "S", self.getDeltaMovement());
+				ShipCollisionDebug.log("[groundstick] {} supported -> onGround=true, clamped dMove={} dragged={}",
+						self.level().isClientSide() ? "C" : "S", self.getDeltaMovement(), dragged);
 			}
 		}
 	}

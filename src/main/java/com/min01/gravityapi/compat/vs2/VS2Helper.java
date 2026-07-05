@@ -822,6 +822,57 @@ public class VS2Helper {
         return Math.min(Math.max(penetration, 0.0D), maxDepth);
     }
 
+    // Reflection handles for VS2's entity-dragging bookkeeping, resolved lazily on first use.
+    private static Method getDraggingInformationMethod = null;
+    private static Method setLastShipStoodOnMethod = null;
+    private static boolean draggingInitAttempted = false;
+
+    /**
+     * Keep VS2's entity dragging alive for an entity standing on a ship.
+     *
+     * <p>VS2's {@code EntityDragger} runs every tick and carries entities along with the motion of
+     * the ship they stand on (position AND yaw, from the prev-tick-to-current transform delta) —
+     * but only for entities whose {@code EntityDraggingInformation.lastShipStoodOn} was refreshed
+     * within the last 25 ticks. Stock VS2 refreshes that field exclusively inside
+     * {@code EntityShipCollisionUtils.adjustEntityMovementForShipCollisions}, which we cancel at
+     * HEAD for ship-gravity entities (their collision runs through our ship-local path instead).
+     * Without this call those entities are never dragged at all: a moving/rotating ship slides out
+     * from under (or into) them every tick, which is exactly the clipping/glitching seen on fast
+     * ships. Setting the field is enough — VS2's setter also resets {@code ticksSinceStoodOnShip}.
+     *
+     * @return true if the entity is on a ship and the dragging info was updated
+     */
+    public static boolean markStandingOnShip(Entity entity) {
+        Object ship = getShipEntityIsOn(entity);
+        if (ship == null) {
+            return false;
+        }
+        try {
+            if (!draggingInitAttempted) {
+                draggingInitAttempted = true;
+                Class<?> providerClass = Class.forName(
+                        "org.valkyrienskies.mod.common.util.IEntityDraggingInformationProvider");
+                getDraggingInformationMethod = providerClass.getMethod("getDraggingInformation");
+                Class<?> infoClass = Class.forName(
+                        "org.valkyrienskies.mod.common.util.EntityDraggingInformation");
+                setLastShipStoodOnMethod = infoClass.getMethod("setLastShipStoodOn", Long.class);
+                LOGGER.info("[VS2Helper] Initialized VS2 entity-dragging integration");
+            }
+            if (getDraggingInformationMethod == null || setLastShipStoodOnMethod == null) {
+                return false;
+            }
+            Long shipId = (Long) ship.getClass().getMethod("getId").invoke(ship);
+            Object draggingInfo = getDraggingInformationMethod.invoke(entity);
+            setLastShipStoodOnMethod.invoke(draggingInfo, shipId);
+            return true;
+        } catch (Exception e) {
+            if (ShipCollisionDebug.shouldLog(entity)) {
+                ShipCollisionDebug.log("[drag] markStandingOnShip failed: {}", e.toString());
+            }
+            return false;
+        }
+    }
+
     /**
      * The world-space direction of "ship up" (ship-local +Y), or {@code null} if the entity is not
      * on a resolvable ship.
