@@ -156,8 +156,14 @@ public class RotationAnimation {
         return rotationCenterOffset.add(rotatedEyeOffsetFromRotationCenter);
     }
     
+    /**
+     * Smootherstep (zero velocity AND zero acceleration at both ends): the rotation eases
+     * in gently, sweeps, and settles without the abrupt onset smoothstep has — the Mario
+     * Galaxy feel for gravity flips.
+     */
     private static float mapProgress(float delta) {
-        return Mth.clamp((delta * delta * (3 - 2 * delta)), 0, 1);
+        delta = Mth.clamp(delta, 0, 1);
+        return delta * delta * delta * (delta * (delta * 6 - 15) + 10);
     }
     
     public boolean isInAnimation() {
@@ -177,19 +183,20 @@ public class RotationAnimation {
             return;
         }
 
-        // For arbitrary gravity, we use shorter animation times since the changes are small
-        long actualDuration = Math.min(durationTimeMs, 100);
+        // Retargets arrive every tick while a ship rotates continuously; keep them short
+        // but not instant so consecutive segments blend into one motion
+        long actualDuration = Math.max(100, Math.min(durationTimeMs, 300));
 
         update(timeMs);
 
-        // Get the quaternion rotations for both gravity directions
-        Quaternionf prevRotation = new Quaternionf(prevGravity.getWorldToPlayerRotation());
+        // Chain from whatever rotation is currently on screen (mid-animation included) so
+        // per-tick retargeting never snaps back to the raw previous frame
+        Quaternionf currentRotation = getCurrentGravityRotation(prevGravity, timeMs);
         Quaternionf newRotation = new Quaternionf(newGravity.getWorldToPlayerRotation());
 
-        // Start animation from current state
         this.relativeRotationCenter = Vec3.ZERO;
         inAnimation = true;
-        startGravityRotation = prevRotation;
+        startGravityRotation = currentRotation;
         endGravityRotation = newRotation;
         startTimeMs = timeMs;
         endTimeMs = timeMs + actualDuration;

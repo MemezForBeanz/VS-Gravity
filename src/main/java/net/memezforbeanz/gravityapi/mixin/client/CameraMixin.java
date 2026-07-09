@@ -10,9 +10,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import net.memezforbeanz.gravityapi.RotationAnimation;
 import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
 import net.memezforbeanz.gravityapi.api.GravityDirection;
 import net.memezforbeanz.gravityapi.client.GravityCameraState;
+import net.memezforbeanz.gravityapi.util.QuaternionUtil;
 
 import net.minecraft.client.Camera;
 import net.minecraft.util.Mth;
@@ -52,21 +54,36 @@ public abstract class CameraMixin {
         boolean thirdPerson, boolean inverseView, float tickDelta
     ) {
         GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(focusedEntity);
+        RotationAnimation animation = GravityChangerAPI.getRotationAnimation(focusedEntity);
+        boolean animating = animation != null && animation.isInAnimation();
 
-        // If gravity is exactly down, use default behavior
-        if (gravityDirection.equals(GravityDirection.DOWN)) {
+        // If gravity is exactly down and nothing is easing back, use default behavior
+        if (gravityDirection.equals(GravityDirection.DOWN) && !animating) {
             original.call(this, x, y, z);
             return;
         }
-        
+
         // For any non-down gravity (including VS ships), use quaternion-based eye position
         double entityX = Mth.lerp((double) tickDelta, focusedEntity.xo, focusedEntity.getX());
         double entityY = Mth.lerp((double) tickDelta, focusedEntity.yo, focusedEntity.getY());
         double entityZ = Mth.lerp((double) tickDelta, focusedEntity.zo, focusedEntity.getZ());
         double currentCameraY = Mth.lerp(tickDelta, this.eyeHeightOld, this.eyeHeight);
 
-        // Use the exact quaternion rotation for eye offset
-        Vec3 eyeOffset = gravityDirection.vecPlayerToWorld(new Vec3(0, currentCameraY, 0));
+        // Rotate the eye offset with the same smoothed rotation the frame is rendered
+        // with, and let the animation compensate the rotation-center jump during flips —
+        // placing the eye in the final frame while the rotation is still easing makes the
+        // camera pop sideways on every gravity change.
+        Quaternionf frameRotation = GravityCameraState.hasCachedRotation()
+                ? GravityCameraState.getLastSmoothedRotation()
+                : new Quaternionf(gravityDirection.getWorldToPlayerRotation());
+        Vec3 localEyeOffset = new Vec3(0, currentCameraY, 0);
+        Vec3 eyeOffset;
+        if (animating) {
+            eyeOffset = animation.getEyeOffset(frameRotation, localEyeOffset,
+                    GravityChangerAPI.getGravityDirection(focusedEntity));
+        } else {
+            eyeOffset = QuaternionUtil.rotate(localEyeOffset, new Quaternionf(frameRotation).conjugate());
+        }
         original.call(this, entityX + eyeOffset.x(), entityY + eyeOffset.y(), entityZ + eyeOffset.z());
     }
     

@@ -3,6 +3,7 @@ package net.memezforbeanz.gravityapi.api;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix3f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
@@ -120,8 +121,17 @@ public class GravityDirection {
      */
     private void computeQuaternions() {
         Vec3 defaultDown = new Vec3(0, -1, 0);
-        
-        if (this.vector.distanceToSqr(defaultDown) < 0.0001) {
+
+        if (this.isCardinal) {
+            // Cardinal directions must use the exact same bases as RotationUtil's
+            // vecWorldToPlayer/vecPlayerToWorld switch tables. The generic axis-angle
+            // path below picks the minimal rotation, whose roll about the gravity axis
+            // matches RotationUtil only for some directions (NORTH yes, EAST/WEST no).
+            // Any consumer mixing the two frames (movement uses RotationUtil, the ship
+            // collision pipeline uses these quaternions) would disagree per axis.
+            this.rotationQuaternion = cardinalWorldToPlayer(this.nearestDirection);
+            this.inverseRotationQuaternion = new Quaternionf(rotationQuaternion).conjugate();
+        } else if (this.vector.distanceToSqr(defaultDown) < 0.0001) {
             // Already pointing down, identity rotation
             this.rotationQuaternion = new Quaternionf();
             this.inverseRotationQuaternion = new Quaternionf();
@@ -152,6 +162,37 @@ public class GravityDirection {
         Vector3f testVec = new Vector3f((float) this.vector.x, (float) this.vector.y, (float) this.vector.z);
         testVec.rotate(this.rotationQuaternion);
         // testVec should now be approximately (0, -1, 0)
+    }
+
+    /**
+     * World-to-player rotation for a cardinal gravity direction, matching
+     * {@code RotationUtil.vecWorldToPlayer} exactly. Each matrix column is the image of a
+     * world basis vector under that switch table (duplicated here rather than referenced
+     * to avoid a class-initialization cycle: RotationUtil's static tables are built from
+     * these constants).
+     */
+    private static Quaternionf cardinalWorldToPlayer(Direction direction) {
+        return switch (direction) {
+            case DOWN -> new Quaternionf();
+            // (x,y,z) -> (-x,-y,z)
+            case UP -> quatFromColumns(-1, 0, 0, 0, -1, 0, 0, 0, 1);
+            // (x,y,z) -> (x,z,-y)
+            case NORTH -> quatFromColumns(1, 0, 0, 0, 0, -1, 0, 1, 0);
+            // (x,y,z) -> (-x,-z,-y)
+            case SOUTH -> quatFromColumns(-1, 0, 0, 0, 0, -1, 0, -1, 0);
+            // (x,y,z) -> (-z,x,-y)
+            case WEST -> quatFromColumns(0, 1, 0, 0, 0, -1, -1, 0, 0);
+            // (x,y,z) -> (z,-x,-y)
+            case EAST -> quatFromColumns(0, -1, 0, 0, 0, -1, 1, 0, 0);
+        };
+    }
+
+    /** Arguments are column-major: (c0x,c0y,c0z, c1x,c1y,c1z, c2x,c2y,c2z). */
+    private static Quaternionf quatFromColumns(float m00, float m01, float m02,
+                                               float m10, float m11, float m12,
+                                               float m20, float m21, float m22) {
+        return new Quaternionf().setFromNormalized(
+                new Matrix3f(m00, m01, m02, m10, m11, m12, m20, m21, m22));
     }
     
     /**

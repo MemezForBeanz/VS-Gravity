@@ -30,7 +30,9 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.AreaEffectCloud;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
+import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.AbstractArrow;
@@ -134,7 +136,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
      * disabled and our ship-up depenetration shoves them away from the hull (vibration/forcefield).
      */
     public boolean isShipGravityPhysics() {
-        return inGravityGeneratorField || isCameraOnlyGravity || arbitraryGravityDirection != null;
+        // A *cardinal* arbitrary direction (e.g. a planet-style field generator pulling toward a
+        // block in the normal world) must NOT engage the ship pipeline: those entities get the
+        // classic cardinal gravity physics (transformed hitbox, the cardinal collide mixins).
+        // Genuinely ship-relative gravity is camera-only, in a registry generator field, or
+        // non-cardinal (a ship-rotated vector).
+        return inGravityGeneratorField || isCameraOnlyGravity
+                || (arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal());
     }
 
     /**
@@ -152,9 +160,20 @@ public class GravityCapabilityImpl implements IGravityCapability {
     }
 
     private boolean isFiringUpdateEvent = false;
-    
+
     private @Nullable GravityCapabilityImpl.GravityDirEffect delayApplyDirEffect = null;
     private double delayApplyStrengthEffect = 1.0;
+
+    // Effect linger: when a per-tick gravity effect (generator field, plate, anchor) misses a
+    // tick — boundary jitter at a small field's edge, tick-order races, sync gaps — hold the
+    // last effect for a few ticks instead of snapping back to base gravity. Without this,
+    // every dropout is a full cardinal flip (hitbox rebuild, setPos, velocity transform) that
+    // reverses one tick later: items twitch at field edges and player movement desyncs.
+    private int ticksSinceLastEffect = 1000;
+    private Direction lingerDirection = Direction.DOWN;
+    private @Nullable GravityDirection lingerArbitrary = null;
+    private boolean lingerCameraOnly = false;
+    private @Nullable RotationParameters lingerRotationParameters = null;
     
     // only used on server side
     public boolean needsSync = false;
@@ -394,13 +413,34 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 isFiringUpdateEvent = false;
             }
             
-            if (currentEffectPriority == Double.MIN_VALUE) {
+            if (currentEffectPriority != Double.MIN_VALUE) {
+                // An effect is active: remember it so a brief dropout can be ridden out
+                ticksSinceLastEffect = 0;
+                lingerDirection = currGravityDirection;
+                lingerArbitrary = arbitraryGravityDirection;
+                lingerCameraOnly = isCameraOnlyGravity;
+                lingerRotationParameters = currentRotationParameters;
+            } else if (ticksSinceLastEffect < GravityConfig.effectLingerTicks.get()) {
+                // No effect this tick, but one was active moments ago: hold it
+                ticksSinceLastEffect++;
+                currGravityDirection = lingerDirection;
+                arbitraryGravityDirection = lingerArbitrary;
+                isCameraOnlyGravity = lingerCameraOnly;
+                if (lingerRotationParameters != null) {
+                    currentRotationParameters = lingerRotationParameters;
+                }
+            } else {
                 // if no effect is applied, reset the rotation parameters and arbitrary gravity
+                if (ticksSinceLastEffect < 1000) {
+                    ticksSinceLastEffect++;
+                }
                 currentRotationParameters = RotationParameters.getDefault();
                 // Clear arbitrary gravity direction when no effect is active
                 arbitraryGravityDirection = null;
                 // Reset camera-only flag
                 isCameraOnlyGravity = false;
+                lingerArbitrary = null;
+                lingerRotationParameters = null;
             }
         }
         
@@ -558,6 +598,15 @@ public class GravityCapabilityImpl implements IGravityCapability {
         // Get current direction to compare against
         GravityDirection currentDirection = getCurrentGravityDirection();
         if (currentDirection == null || currentDirection.equals(GravityDirection.DOWN) && targetDirection.equals(GravityDirection.DOWN)) {
+            return targetDirection;
+        }
+
+        // Cardinal-to-cardinal changes snap like classic GravityChanger: the RotationAnimation
+        // smooths the camera, and physics must flip in one tick. Interpolating here would emit
+        // non-cardinal intermediates (untransformed hitbox, ship pipeline) for a plain
+        // wall-to-wall transition, and the >90-degree guard below would swallow 180-degree flips
+        // outright - a planet-style field could never pull an entity on its far side.
+        if (currentDirection.isCardinal() && targetDirection.isCardinal()) {
             return targetDirection;
         }
 
@@ -738,7 +787,10 @@ public class GravityCapabilityImpl implements IGravityCapability {
             return;
         }
         
-        if (entity instanceof AreaEffectCloud || entity instanceof AbstractArrow || entity instanceof EndCrystal) {
+        if (entity instanceof AreaEffectCloud || entity instanceof AbstractArrow || entity instanceof EndCrystal
+                || entity instanceof ItemEntity || entity instanceof ExperienceOrb) {
+            // Items and orbs are small enough not to suffocate; nudging them on every flip
+            // makes them visibly pop around at field boundaries
             return;
         }
         
