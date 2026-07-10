@@ -43,7 +43,7 @@ public class GravityConfig
     	GravityConfig.voidDamageOnHorizontalFallTooFar = config.comment("void damage when horizontally fall too far").define("voidDamageOnHorizontalFallTooFar", true);
     	GravityConfig.autoJumpOnGravityPlateInnerCorner = config.comment("auto jump on gravity plate inner corner").define("autoJumpOnGravityPlateInnerCorner", true);
     	GravityConfig.adjustPositionAfterChangingGravity = config.comment("adjust position after gravity change").define("adjustPositionAfterChangingGravity", true);
-    	GravityConfig.maxGravityChangeAngle = config.comment("maximum angle change (in degrees) allowed per tick for gravity direction. Set to 180 for no limit.").defineInRange("maxGravityChangeAngle", 45.0, 0.0, 180.0);
+    	GravityConfig.maxGravityChangeAngle = config.comment("maximum angle change (in degrees) allowed per tick for gravity direction. Set to 180 for no limit.").defineInRange("maxGravityChangeAngle", 90.0, 0.0, 180.0);
     	GravityConfig.smoothArbitraryGravity = config.comment("enable smooth arbitrary gravity for VS ships (allows non-cardinal directions)").define("smoothArbitraryGravity", true);
     	GravityConfig.maxTerrainStandAngle = config.comment("maximum angle (in degrees) between arbitrary gravity and the world terrain's up direction at which entities can still stand on terrain without sliding. Beyond this the surface behaves like a too-steep slope.").defineInRange("maxTerrainStandAngle", 60.0, 0.0, 90.0);
     	GravityConfig.effectLingerTicks = config.comment("how many ticks a gravity effect (generator field, plate, anchor) is held after it stops being applied. Smooths flicker at field boundaries; 0 disables.").defineInRange("effectLingerTicks", 5, 0, 40);

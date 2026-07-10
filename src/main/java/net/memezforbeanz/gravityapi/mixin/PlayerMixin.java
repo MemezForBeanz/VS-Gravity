@@ -154,15 +154,39 @@ public abstract class PlayerMixin extends LivingEntity {
     private void inject_adjustMovementForSneaking(Vec3 movement, MoverType type, CallbackInfoReturnable<Vec3> cir) {
         Entity this_ = (Entity) (Object) this;
 
-        // Skip for arbitrary gravity (VS ships)
-        if (GravityChangerAPI.isArbitraryGravity(this_)) return;
+        // On VS ships the edge back-off probes (vanilla's and ours) run world-space
+        // noCollision checks that never see ship blocks: every probe reports "air below",
+        // the loop shrinks movement to zero, and sneaking can't walk at all. Skip the
+        // back-off entirely under ship gravity physics.
+        if (GravityChangerAPI.isShipGravityPhysics(this_)) {
+            cir.setReturnValue(movement);
+            return;
+        }
 
         Direction gravityDirection = GravityChangerAPI.getGravityDirection(this_);
-        if (gravityDirection == Direction.DOWN) return;
+        if (gravityDirection == Direction.DOWN) {
+            // Same probe blindness for cardinal gravity while standing on ship blocks:
+            // onGround comes from the ship collision pipeline, but the world sees no
+            // ground beneath, so vanilla back-off would cancel all sneak movement.
+            if (this_.onGround() && !this_.level().noCollision(this, this.getBoundingBox().move(0.0D, -this.maxUpStep(), 0.0D))) {
+                return; // world can see the ground; vanilla back-off behaves correctly
+            }
+            if (this_.onGround() && this.isStayingOnGroundSurface()) {
+                cir.setReturnValue(movement);
+            }
+            return;
+        }
 
         Vec3 playerMovement = RotationUtil.vecWorldToPlayer(movement, gravityDirection);
 
         if (!this.abilities.flying && (type == MoverType.SELF || type == MoverType.PLAYER) && this.isStayingOnGroundSurface() && this.isAboveGround()) {
+            // Probe-blind guard: onGround but the world-space probe sees nothing beneath
+            // along gravity (standing on ship blocks) - the shrink loops below would zero
+            // all movement, so keep it unchanged instead.
+            if (this_.onGround() && this_.level().noCollision(this, this.getBoundingBox().move(RotationUtil.vecPlayerToWorld(new Vec3(0.0D, (double) (-this.maxUpStep()), 0.0D), gravityDirection)))) {
+                cir.setReturnValue(movement);
+                return;
+            }
             double d = playerMovement.x;
             double e = playerMovement.z;
             double var7 = 0.05D;

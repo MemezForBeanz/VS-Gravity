@@ -546,6 +546,70 @@ public class VS2Helper {
     }
 
     /**
+     * Transform a world direction to a ship-local direction using a block's ship context
+     */
+    @Nullable
+    public static Vec3 worldToShipDirectionFromBlock(Level level, BlockPos blockOnShip, Vec3 worldDir) {
+        Object ship = getShipAtBlock(level, blockOnShip);
+        if (ship == null) {
+            return null;
+        }
+
+        Object matrix = getWorldToShipMatrixFromShip(ship);
+        if (matrix == null) {
+            return null;
+        }
+
+        try {
+            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
+            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
+                    .newInstance(worldDir.x, worldDir.y, worldDir.z);
+
+            Method transformMethod = matrix.getClass().getMethod("transformDirection", vector3dClass);
+            Object result = transformMethod.invoke(matrix, vector);
+
+            Method xMethod = result.getClass().getMethod("x");
+            Method yMethod = result.getClass().getMethod("y");
+            Method zMethod = result.getClass().getMethod("z");
+
+            double x = (Double) xMethod.invoke(result);
+            double y = (Double) yMethod.invoke(result);
+            double z = (Double) zMethod.invoke(result);
+
+            return new Vec3(x, y, z);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Transform a shipyard-space AABB to the world-space AABB enclosing it (corner sweep).
+     * Returns null when the block is not on a ship or the transform is unavailable.
+     */
+    @Nullable
+    public static AABB shipBoxToWorldBox(Level level, BlockPos blockOnShip, AABB shipBox) {
+        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < 8; i++) {
+            Vec3 corner = new Vec3(
+                    (i & 1) == 0 ? shipBox.minX : shipBox.maxX,
+                    (i & 2) == 0 ? shipBox.minY : shipBox.maxY,
+                    (i & 4) == 0 ? shipBox.minZ : shipBox.maxZ);
+            Vec3 world = shipToWorldPosition(level, blockOnShip, corner);
+            if (world == null) {
+                return null;
+            }
+            minX = Math.min(minX, world.x);
+            minY = Math.min(minY, world.y);
+            minZ = Math.min(minZ, world.z);
+            maxX = Math.max(maxX, world.x);
+            maxY = Math.max(maxY, world.y);
+            maxZ = Math.max(maxZ, world.z);
+        }
+        return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
+    /**
      * Get the ship-to-world transformation matrix from a ship object
      */
     @Nullable

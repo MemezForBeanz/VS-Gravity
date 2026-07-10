@@ -627,13 +627,10 @@ public class GravityCapabilityImpl implements IGravityCapability {
             return targetDirection;
         }
 
-        // If angle is way too large (e.g., more than 90 degrees), skip this change entirely
-        // This prevents jarring gravity flips when ship rotates rapidly
-        if (angleDegrees > 90.0) {
-            return currentDirection;
-        }
-
-        // Interpolate toward target by maxAngle
+        // Interpolate toward target by maxAngle. Never swallow large changes outright:
+        // with effect linger holding the previous direction between plate handoffs, a
+        // >90-degree guard would permanently block big transitions (plating on the far
+        // side of a rotating ship could never take over).
         double t = maxAngle / angleDegrees;
         Vec3 interpolated = slerp(currentVec, targetVec, t);
 
@@ -651,6 +648,15 @@ public class GravityCapabilityImpl implements IGravityCapability {
         if (theta < 0.001) {
             // Vectors are nearly parallel, use linear interpolation
             return v1.scale(1 - t).add(v2.scale(t)).normalize();
+        }
+
+        if (theta > Math.PI - 0.001) {
+            // Antiparallel: sin(theta) ~ 0, the slerp formula divides by zero. Rotate v1
+            // around any perpendicular axis instead so 180-degree flips still progress.
+            Vec3 axis = Math.abs(v1.y) < 0.9 ? new Vec3(0, 1, 0) : new Vec3(1, 0, 0);
+            Vec3 perp = v1.cross(axis).normalize();
+            double angle = t * theta;
+            return v1.scale(Math.cos(angle)).add(perp.scale(Math.sin(angle))).normalize();
         }
 
         double sinTheta = Math.sin(theta);
@@ -977,6 +983,21 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 currentRotationParameters, false
             );
             prevGravityDirection = currGravityDirection;
+            // The cardinal animation targets the nearest cardinal; if the real gravity is
+            // non-cardinal (ship), retarget from the in-flight rotation to the true
+            // direction so rendering never snaps when the cardinal animation finishes.
+            if (entity.level().isClientSide() && animation != null
+                    && arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal()) {
+                long timeMs = entity.level().getGameTime() * 50;
+                GravityDirection from = prevArbitraryGravityDirection != null
+                    ? prevArbitraryGravityDirection
+                    : GravityDirection.fromDirection(currGravityDirection);
+                animation.startArbitraryRotationAnimation(
+                    arbitraryGravityDirection, from,
+                    currentRotationParameters.rotationTimeMS(),
+                    entity, timeMs
+                );
+            }
         } else if (leavingArbitraryGravity) {
             // Transitioning from arbitrary gravity back to normal/cardinal gravity
             // Apply a gravity change to reset the player orientation

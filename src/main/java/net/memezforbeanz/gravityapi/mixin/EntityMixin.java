@@ -23,6 +23,7 @@ import net.memezforbeanz.gravityapi.capabilities.GravityCapabilities;
 import net.memezforbeanz.gravityapi.capabilities.IGravityCapability;
 import net.memezforbeanz.gravityapi.compat.vs2.ShipCollisionDebug;
 import net.memezforbeanz.gravityapi.compat.vs2.VS2Helper;
+import net.memezforbeanz.gravityapi.compat.vs2.VS2Integration;
 import net.memezforbeanz.gravityapi.config.GravityConfig;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
 
@@ -276,7 +277,17 @@ public abstract class EntityMixin {
         GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec((Entity) (Object) this);
         if (gravityDirection.equals(GravityDirection.DOWN)) return;
 
-        cir.setReturnValue(BlockPos.containing(this.position.add(gravityDirection.getVector().scale(0.5000001D))));
+        Vec3 probe = this.position.add(gravityDirection.getVector().scale(0.5000001D));
+        // On a VS ship the deck blocks live at shipyard coordinates - a world-space probe
+        // only ever finds air (air friction), making the deck feel slippery. Transform the
+        // probe into ship space so friction/speed come from the actual deck block.
+        if (VS2Integration.isVS2Loaded()) {
+            Vec3 shipProbe = VS2Helper.worldToShipPosition((Entity) (Object) this, probe);
+            if (shipProbe != null) {
+                probe = shipProbe;
+            }
+        }
+        cir.setReturnValue(BlockPos.containing(probe));
     }
     
     @Inject(

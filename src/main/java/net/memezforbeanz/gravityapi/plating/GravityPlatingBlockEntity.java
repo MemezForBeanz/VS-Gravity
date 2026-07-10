@@ -8,7 +8,10 @@ import org.jetbrains.annotations.Nullable;
 
 import net.memezforbeanz.gravityapi.EntityTags;
 import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
+import net.memezforbeanz.gravityapi.api.GravityDirection;
 import net.memezforbeanz.gravityapi.capabilities.GravityCapabilityImpl;
+import net.memezforbeanz.gravityapi.compat.vs2.VS2Helper;
+import net.memezforbeanz.gravityapi.compat.vs2.VS2Integration;
 import net.memezforbeanz.gravityapi.config.GravityConfig;
 import net.memezforbeanz.gravityapi.init.GravityBlocks;
 import net.memezforbeanz.gravityapi.util.GCUtil;
@@ -240,71 +243,114 @@ public class GravityPlatingBlockEntity extends BlockEntity {
         if (!(blockState.getBlock() instanceof GravityPlatingBlock gravityPlatingBlock)) {
             return;
         }
-        
+
         be.refreshCache();
-        
+
         AABB roughBox = be.getRoughEffectBox();
-        
+
+        // On a VS ship, this block entity ticks at shipyard coordinates while the entities it
+        // should affect exist at world coordinates: the entity query must use the world-space
+        // image of the effect box, the geometry tests must run on ship-space positions, and the
+        // resulting gravity direction must be rotated into the world frame. Without this, ship
+        // plating never sees anyone.
+        boolean onShip = VS2Integration.isVS2Loaded() && VS2Helper.isBlockOnShip(world, blockPos);
+
+        AABB queryBox = roughBox;
+        if (onShip) {
+            queryBox = VS2Helper.shipBoxToWorldBox(world, blockPos, roughBox);
+            if (queryBox == null) {
+                return;
+            }
+        }
+
         List<Entity> entities = world.getEntitiesOfClass(
             Entity.class,
-            roughBox,
+            queryBox,
             e -> EntityTags.canChangeGravity(e)
         );
-        
+
         for (Entity entity : entities) {
             boolean applies = false;
-            
+
             GravityCapabilityImpl comp = GravityChangerAPI.getGravityComponent(entity);
+
+            // Entity position and gravity expressed in the plate's (ship) frame
+            Vec3 feetPos = entity.position();
+            Vec3 eyePos = entity.getEyePosition();
             Direction entityGravityDir = comp.getCurrGravityDirection();
-            
+            if (onShip) {
+                feetPos = VS2Helper.worldToShipPosition(world, blockPos, feetPos);
+                eyePos = VS2Helper.worldToShipPosition(world, blockPos, eyePos);
+                if (feetPos == null || eyePos == null) {
+                    continue;
+                }
+                Vec3 localGravity = VS2Helper.worldToShipDirectionFromBlock(
+                        world, blockPos, comp.getCurrentGravityDirection().getVector());
+                if (localGravity != null) {
+                    entityGravityDir = Direction.getNearest(localGravity.x, localGravity.y, localGravity.z);
+                }
+            }
+
             for (Direction plateDir : Direction.values()) {
                 SideData sideDatum = be.sideData[plateDir.ordinal()];
                 if (sideDatum != null) {
                     Direction gravityEffectDir = sideDatum.isAttracting ? plateDir : plateDir.getOpposite();
-                    
+
                     // when the player has no gravity effect and is touching the plate with their eyes,
                     // test the eye pos
                     boolean isOpposite = (entityGravityDir == gravityEffectDir.getOpposite());
-                    Vec3 testingPos = isOpposite ? entity.getEyePosition() : entity.position();
-                    
+                    Vec3 testingPos = isOpposite ? eyePos : feetPos;
+
                     AABB gravityEffectBox = sideDatum.getEffectBox(blockPos, plateDir, world);
                     if (!gravityEffectBox.contains(testingPos)) {
                         continue;
                     }
-                    
+
                     Vec3 plateDirVec = Vec3.atLowerCornerOf(plateDir.getNormal());
                     Vec3 effectCenter = Vec3.atCenterOf(blockPos).add(plateDirVec.scale(0.5));
-                    
+
                     // move the center out a little
                     // to make the distance to sharing edge different to different plates
                     double adjustment = 0.1;
                     Vec3 effectCenterAdjusted = effectCenter.add(plateDirVec.scale(-adjustment));
-                    
+
                     Vec3 deltaVec = testingPos.subtract(effectCenterAdjusted);
-                    
+
                     double distanceToPlane = -deltaVec.dot(plateDirVec);
                     if (distanceToPlane < -adjustment - 0.001) {
                         continue;
                     }
-                    
+
                     Vec3 localVec = RotationUtil.vecWorldToPlayer(deltaVec, plateDir);
                     double dx = GCUtil.distanceToRange(localVec.x, -0.5, 0.5);
                     double dz = GCUtil.distanceToRange(localVec.z, -0.5, 0.5);
                     double distanceToPlate = Math.sqrt(dx * dx + dz * dz + distanceToPlane * distanceToPlane);
-                    
+
                     double priority = 1000 - distanceToPlate;
                     if (isOpposite) {
                         // reduce the chance of opposite side plating interference
                         priority -= 10;
                     }
-                    comp.applyGravityDirectionEffect(
-                        gravityEffectDir, null, priority
-                    );
+                    if (onShip) {
+                        Vec3 worldDir = VS2Helper.shipToWorldDirectionFromBlock(
+                                world, blockPos, Vec3.atLowerCornerOf(gravityEffectDir.getNormal()));
+                        if (worldDir == null) {
+                            continue;
+                        }
+                        comp.applyGravityDirectionEffect(
+                            GravityDirection.fromVector(worldDir.normalize()), null, priority
+                        );
+                    } else {
+                        comp.applyGravityDirectionEffect(
+                            gravityEffectDir, null, priority
+                        );
+                    }
                     applies = true;
                 }
             }
-            
-            if (applies && GravityConfig.autoJumpOnGravityPlateInnerCorner.get()) {
+
+            // The corner auto-jump math is world-frame; skip it on ships
+            if (applies && !onShip && GravityConfig.autoJumpOnGravityPlateInnerCorner.get()) {
                 tryToDoCornerAutoJump(blockState, blockPos, entity, comp);
             }
         }

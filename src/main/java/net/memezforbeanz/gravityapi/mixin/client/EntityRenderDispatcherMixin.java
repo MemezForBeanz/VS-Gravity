@@ -70,12 +70,9 @@ public abstract class EntityRenderDispatcherMixin {
                 return;
             }
             long timeMs = entity.level().getGameTime() * 50 + (long) (tickDelta * 50);
-            // Use arbitrary gravity rotation if not cardinal
-            if (!gravityDirection.isCardinal()) {
-                matrices.mulPose(new Quaternionf(gravityDirection.getWorldToPlayerRotation()).conjugate());
-            } else {
-                matrices.mulPose(new Quaternionf(animation.getCurrentGravityRotation(gravityDirection.getNearestDirection(), timeMs)).conjugate());
-            }
+            // Always route through the animation so non-cardinal (ship) gravity keeps the
+            // smooth interpolated rotation instead of snapping to the raw target quaternion
+            matrices.mulPose(new Quaternionf(animation.getCurrentGravityRotation(gravityDirection, timeMs)).conjugate());
         }
     }
     
