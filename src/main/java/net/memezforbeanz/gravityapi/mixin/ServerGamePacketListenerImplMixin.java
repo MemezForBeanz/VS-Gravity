@@ -4,11 +4,14 @@ package net.memezforbeanz.gravityapi.mixin;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Constant;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
+import net.memezforbeanz.gravityapi.capabilities.GravityCapabilityImpl;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
 
 import net.minecraft.core.Direction;
@@ -149,8 +152,38 @@ public abstract class ServerGamePacketListenerImplMixin {
         if (gravityDirection == Direction.DOWN) {
             return vec3d;
         }
-        
+
         return RotationUtil.vecWorldToPlayer(vec3d, gravityDirection);
+    }
+
+    /**
+     * The "moved wrongly" threshold (0.0625 sq-blocks) compares the client's claimed
+     * position against the server's own movement simulation. Around a gravity flip the two
+     * sides briefly disagree on the gravity frame (the flip lands 1-2 ticks apart), and
+     * under non-down/ship gravity the server simulation is not authoritative anyway - the
+     * teleport-back it triggers is the rubber-banding desync. Relax the check in exactly
+     * those windows; normal DOWN-gravity play keeps the vanilla threshold.
+     */
+    @ModifyConstant(
+        method = "handleMovePlayer",
+        constant = @Constant(doubleValue = 0.0625D)
+    )
+    private double gravitychanger$relaxMovedWronglyCheck(double original) {
+        Direction gravityDirection = GravityChangerAPI.getGravityDirection(this.player);
+        if (gravityDirection != Direction.DOWN) {
+            return Double.MAX_VALUE;
+        }
+        GravityCapabilityImpl comp = GravityChangerAPI.getGravityComponent(this.player);
+        if (comp != null) {
+            if (comp.isShipGravityPhysics()) {
+                return Double.MAX_VALUE;
+            }
+            long sinceFlip = this.player.level().getGameTime() - comp.lastGravityChangeGameTime;
+            if (sinceFlip >= 0 && sinceFlip < 20) {
+                return Double.MAX_VALUE;
+            }
+        }
+        return original;
     }
     
     //@Redirect(

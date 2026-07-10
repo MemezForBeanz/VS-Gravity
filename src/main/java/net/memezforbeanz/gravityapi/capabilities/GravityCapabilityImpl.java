@@ -307,13 +307,94 @@ public class GravityCapabilityImpl implements IGravityCapability {
     @Nullable
     private Vec3 stickyPlatingDirection = null;
 
+    // Client-authoritative plating for players: the client's plate detection runs against
+    // its own (authoritative) position, so the client reports its resolved choice to the
+    // server instead of the server detecting independently 1-2 ticks behind - independent
+    // detection made both sides flip at different times and fight over position.
+    @Nullable
+    private Vec3 lastReportedPlatingDirection = null;
+    @Nullable
+    private BlockPos lastReportedPlatingSource = null;
+    private long lastPlatingReportTime = -1000;
+    /** Server side: the sender's most recent verified plating report. */
+    @Nullable
+    private PlatingCandidate clientReportedPlating = null;
+    private long clientPlatingReportGameTime = -1000;
+    /** Game time of the last cardinal gravity flip (used to relax server move validation). */
+    public long lastGravityChangeGameTime = -1000;
+
     public void addPlatingCandidate(Vec3 worldDirection, boolean shipFrame, double volume, BlockPos source) {
         platingCandidates.add(new PlatingCandidate(worldDirection.normalize(), shipFrame, volume, source));
     }
 
+    public void setClientReportedPlating(@Nullable PlatingCandidate candidate) {
+        clientReportedPlating = candidate;
+        clientPlatingReportGameTime = entity.level().getGameTime();
+    }
+
+    /**
+     * Anticheat bound for a client plating report, and per-tick staleness check: the source
+     * block must still be a plate and the player must plausibly be within its reach.
+     */
+    public boolean isPlatingReportValid(PlatingCandidate candidate) {
+        if (!(entity.level().getBlockEntity(candidate.source()) instanceof
+                net.memezforbeanz.gravityapi.plating.GravityPlatingBlockEntity)) {
+            return false;
+        }
+        Vec3 plateCenter = Vec3.atCenterOf(candidate.source());
+        if (candidate.shipFrame()) {
+            plateCenter = VS2Integration.isVS2Loaded()
+                ? net.memezforbeanz.gravityapi.compat.vs2.VS2Helper.shipToWorldPosition(
+                    entity.level(), candidate.source(), plateCenter)
+                : null;
+            if (plateCenter == null) {
+                return false;
+            }
+        }
+        double allowed = Math.min(Math.max(candidate.volume(), 0.0), 64.0) + 6.0;
+        return entity.position().distanceToSqr(plateCenter) <= allowed * allowed;
+    }
+
+    private void maybeSendPlatingReport(@Nullable PlatingCandidate chosen) {
+        if (!entity.level().isClientSide() || !GCUtil.isClientPlayer(entity)) {
+            return;
+        }
+        long now = entity.level().getGameTime();
+        boolean changed;
+        if (chosen == null) {
+            changed = lastReportedPlatingDirection != null;
+        } else {
+            changed = lastReportedPlatingDirection == null
+                || lastReportedPlatingDirection.dot(chosen.worldDirection()) < 0.999
+                || !chosen.source().equals(lastReportedPlatingSource);
+        }
+        // Refresh periodically while holding a choice; the server expires stale reports
+        boolean refresh = chosen != null && now - lastPlatingReportTime >= 20;
+        if (!changed && !refresh) {
+            return;
+        }
+        lastReportedPlatingDirection = chosen == null ? null : chosen.worldDirection();
+        lastReportedPlatingSource = chosen == null ? null : chosen.source();
+        lastPlatingReportTime = now;
+        GravityNetwork.sendToServer(new net.memezforbeanz.gravityapi.network.UpdatePlatingGravityPacket(chosen));
+    }
+
     private void resolvePlatingCandidates() {
+        // Server side: players are excluded from server plate detection; inject the
+        // verified client report so the server flips in step with the client
+        if (!entity.level().isClientSide() && entity instanceof net.minecraft.server.level.ServerPlayer
+                && clientReportedPlating != null) {
+            if (entity.level().getGameTime() - clientPlatingReportGameTime <= 40
+                    && isPlatingReportValid(clientReportedPlating)) {
+                platingCandidates.add(clientReportedPlating);
+            } else {
+                clientReportedPlating = null;
+            }
+        }
+
         if (platingCandidates.isEmpty()) {
             stickyPlatingDirection = null;
+            maybeSendPlatingReport(null);
             return;
         }
         List<PlatingCandidate> candidates = new ArrayList<>(platingCandidates);
@@ -322,6 +403,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
         boolean flying = entity instanceof Player player && player.getAbilities().flying;
         if (entity.isSpectator() || flying) {
             stickyPlatingDirection = null;
+            maybeSendPlatingReport(null);
             return;
         }
 
@@ -346,6 +428,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
             }
         }
         stickyPlatingDirection = chosen.worldDirection();
+        maybeSendPlatingReport(chosen);
 
         boolean fallFlying = entity instanceof LivingEntity living && living.isFallFlying();
         RotationParameters params = new RotationParameters(
@@ -562,11 +645,18 @@ public class GravityCapabilityImpl implements IGravityCapability {
 	public void sync(boolean noAnimation, Direction baseGravityDirection, Direction currentGravityDirection, double baseGravityStrength, double currentGravityStrength, @Nullable GravityDirection arbitraryGravity, boolean isCameraOnly)
     {
 		this.baseGravityDirection = baseGravityDirection;
-		this.currGravityDirection = currentGravityDirection;
 		this.baseGravityStrength = baseGravityStrength;
-		this.currGravityStrength = currentGravityStrength;
-		this.arbitraryGravityDirection = arbitraryGravity;
-		this.isCameraOnlyGravity = isCameraOnly;
+		// The local client player computes its current gravity every tick from local
+		// effects (plates, fields) - it is the prediction authority for its own feel.
+		// The server computes the same thing 1-2 ticks apart; letting its packet stomp
+		// curr/arbitrary here caused a flip-fight around every transition (the "server
+		// desync"). Only remote entities take the server's current state verbatim.
+		if (shouldAcceptServerSync()) {
+			this.currGravityDirection = currentGravityDirection;
+			this.currGravityStrength = currentGravityStrength;
+			this.arbitraryGravityDirection = arbitraryGravity;
+			this.isCameraOnlyGravity = isCameraOnly;
+		}
 		if(noAnimation)
 		{
 			GravityChangerAPI.instantlySetClientBaseGravityDirection(this.entity, baseGravityDirection);
@@ -777,9 +867,10 @@ public class GravityCapabilityImpl implements IGravityCapability {
         if (isInitialization) {
             return;
         }
-        
+
         entity.fallDistance = 0;
-        
+        lastGravityChangeGameTime = entity.level().getGameTime();
+
         long timeMs = entity.level().getGameTime() * 50;
         
         Vec3 relativeRotationCenter = getLocalRotationCenter(

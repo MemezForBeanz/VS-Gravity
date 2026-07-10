@@ -23,6 +23,7 @@ public class GravityNetwork
 	{
 		CHANNEL.registerMessage(ID++, UpdateGravityCapabilityPacket.class, UpdateGravityCapabilityPacket::encode, UpdateGravityCapabilityPacket::new, UpdateGravityCapabilityPacket.Handler::onMessage);
 		CHANNEL.registerMessage(ID++, UpdateGravitySyncStatePacket.class, UpdateGravitySyncStatePacket::encode, UpdateGravitySyncStatePacket::new, UpdateGravitySyncStatePacket.Handler::onMessage);
+		CHANNEL.registerMessage(ID++, UpdatePlatingGravityPacket.class, UpdatePlatingGravityPacket::encode, UpdatePlatingGravityPacket::new, UpdatePlatingGravityPacket.Handler::onMessage);
 	}
 	
     public static <MSG> void sendToServer(MSG message) 

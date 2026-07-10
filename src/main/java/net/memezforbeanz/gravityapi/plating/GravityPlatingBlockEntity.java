@@ -291,6 +291,15 @@ public class GravityPlatingBlockEntity extends BlockEntity {
             );
 
             for (Entity entity : entities) {
+                // Players are client-authoritative for plating: the local client detects
+                // and reports its choice (UpdatePlatingGravityPacket); the server injects
+                // the verified report instead of detecting on its stale view of the player.
+                // Remote players on the client are sync-driven.
+                if (entity instanceof Player) {
+                    if (!world.isClientSide() || !GCUtil.isClientPlayer(entity)) {
+                        continue;
+                    }
+                }
                 GravityCapabilityImpl comp = GravityChangerAPI.getGravityComponent(entity);
                 if (comp == null) {
                     continue;
