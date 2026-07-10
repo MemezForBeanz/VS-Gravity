@@ -1,5 +1,8 @@
 package net.memezforbeanz.gravityapi.capabilities;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.apache.commons.lang3.Validate;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -24,6 +27,7 @@ import net.memezforbeanz.gravityapi.network.UpdateGravitySyncStatePacket;
 import net.memezforbeanz.gravityapi.util.GCUtil;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -287,6 +291,72 @@ public class GravityCapabilityImpl implements IGravityCapability {
         });
     }
 
+    /**
+     * A gravity plate's bid for this entity's gravity this tick (AmethystGravity-reattracted
+     * model): plates never apply gravity directly; each nearby plate face adds a candidate,
+     * and {@link #resolvePlatingCandidates()} picks one per tick with hysteresis. This is
+     * what makes wall-walking stable - competing plates at a corner can't fight each other,
+     * and the currently-held direction wins ties instead of flip-flopping.
+     */
+    public record PlatingCandidate(Vec3 worldDirection, boolean shipFrame, double volume, BlockPos source) {}
+
+    public static final double PLATING_EFFECT_PRIORITY = 1000;
+
+    private final List<PlatingCandidate> platingCandidates = new ArrayList<>();
+    /** World-frame direction the plate resolution chose last tick (hysteresis anchor). */
+    @Nullable
+    private Vec3 stickyPlatingDirection = null;
+
+    public void addPlatingCandidate(Vec3 worldDirection, boolean shipFrame, double volume, BlockPos source) {
+        platingCandidates.add(new PlatingCandidate(worldDirection.normalize(), shipFrame, volume, source));
+    }
+
+    private void resolvePlatingCandidates() {
+        if (platingCandidates.isEmpty()) {
+            stickyPlatingDirection = null;
+            return;
+        }
+        List<PlatingCandidate> candidates = new ArrayList<>(platingCandidates);
+        platingCandidates.clear();
+
+        boolean flying = entity instanceof Player player && player.getAbilities().flying;
+        if (entity.isSpectator() || flying) {
+            stickyPlatingDirection = null;
+            return;
+        }
+
+        // Smallest volume = most specific plate tier wins (matches AmethystGravity)
+        double lowestVolume = Double.MAX_VALUE;
+        for (PlatingCandidate c : candidates) {
+            lowestVolume = Math.min(lowestVolume, c.volume());
+        }
+        PlatingCandidate chosen = null;
+        for (PlatingCandidate c : candidates) {
+            if (c.volume() > lowestVolume + 1.0e-9) {
+                continue;
+            }
+            if (chosen == null) {
+                chosen = c;
+            }
+            // Hysteresis: if the direction we already hold is still among the best
+            // candidates, keep it rather than switching to whichever plate iterated first
+            if (stickyPlatingDirection != null && c.worldDirection().dot(stickyPlatingDirection) > 0.999) {
+                chosen = c;
+                break;
+            }
+        }
+        stickyPlatingDirection = chosen.worldDirection();
+
+        boolean fallFlying = entity instanceof LivingEntity living && living.isFallFlying();
+        RotationParameters params = new RotationParameters(
+            entity.onGround(), !fallFlying, RotationParameters.getDefault().rotationTimeMS()
+        );
+        GravityDirection direction = chosen.shipFrame()
+            ? GravityDirection.shipRelative(chosen.worldDirection())
+            : GravityDirection.fromVector(chosen.worldDirection());
+        applyGravityDirectionEffect(direction, params, PLATING_EFFECT_PRIORITY);
+    }
+
     public void updateGravityStatus(boolean sendPacketIfNecessary) {
         // Always check if entity is in a gravity generator field (for hitbox calculations)
         // This needs to run even for entities that accept server sync
@@ -301,6 +371,9 @@ public class GravityCapabilityImpl implements IGravityCapability {
         // (possibly for making it harder to cheat for hacked clients)
         // then we don't calculate its gravity in normal way in client
         if (shouldAcceptServerSync()) {
+            // Plate block entities still tick client-side and add candidates for these
+            // entities; drop them so the list doesn't grow unbounded
+            platingCandidates.clear();
             return;
         }
         
@@ -349,6 +422,9 @@ public class GravityCapabilityImpl implements IGravityCapability {
                             fieldResult.priority()
                     );
                 }
+
+                // Gravity plating: resolve this tick's plate candidates into (at most) one effect
+                resolvePlatingCandidates();
 
                 if (!(entity instanceof LivingEntity livingEntity)) {
                     return;

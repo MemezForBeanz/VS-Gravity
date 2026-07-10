@@ -246,134 +246,100 @@ public class GravityPlatingBlockEntity extends BlockEntity {
 
         be.refreshCache();
 
-        AABB roughBox = be.getRoughEffectBox();
-
         // On a VS ship, this block entity ticks at shipyard coordinates while the entities it
-        // should affect exist at world coordinates: the entity query must use the world-space
-        // image of the effect box, the geometry tests must run on ship-space positions, and the
-        // resulting gravity direction must be rotated into the world frame. Without this, ship
-        // plating never sees anyone.
+        // should affect exist at world coordinates: queries and geometry tests must be swept
+        // between the two frames, and the applied direction must be the plate normal rotated
+        // into the world frame.
         boolean onShip = VS2Integration.isVS2Loaded() && VS2Helper.isBlockOnShip(world, blockPos);
 
-        AABB queryBox = roughBox;
-        if (onShip) {
-            queryBox = VS2Helper.shipBoxToWorldBox(world, blockPos, roughBox);
-            if (queryBox == null) {
-                return;
+        // AmethystGravity-reattracted model: plates only nominate candidates; the entity's
+        // gravity capability resolves them once per tick with hysteresis. Detection is
+        // box-vs-box - the plate's effect box against a collider spanning the entity's feet
+        // in its current gravity frame - which keeps registration stable while standing on
+        // walls and through rotation animations (a feet-point test drifts out of range).
+        for (Direction plateDir : Direction.values()) {
+            SideData sideDatum = be.sideData[plateDir.ordinal()];
+            if (sideDatum == null) {
+                continue;
             }
-        }
+            Direction gravityEffectDir = sideDatum.isAttracting ? plateDir : plateDir.getOpposite();
 
-        List<Entity> entities = world.getEntitiesOfClass(
-            Entity.class,
-            queryBox,
-            e -> EntityTags.canChangeGravity(e)
-        );
-
-        for (Entity entity : entities) {
-            boolean applies = false;
-
-            GravityCapabilityImpl comp = GravityChangerAPI.getGravityComponent(entity);
-
-            // Entity position and gravity expressed in the plate's (ship) frame
-            Vec3 feetPos = entity.position();
-            Vec3 eyePos = entity.getEyePosition();
-            Direction entityGravityDir = comp.getCurrGravityDirection();
-            AABB shipEntityBox = null;
+            Vec3 worldDir;
             if (onShip) {
-                // Under ship gravity the hitbox stays world-aligned, so a single feet/eye
-                // point drifts out of the 1-block effect box (e.g. hanging vertically next
-                // to a wall plate). Detect by hitbox overlap in ship space instead.
-                shipEntityBox = VS2Helper.worldBoxToShipBox(world, blockPos, entity.getBoundingBox());
-                if (shipEntityBox == null) {
+                worldDir = VS2Helper.shipToWorldDirectionFromBlock(
+                        world, blockPos, Vec3.atLowerCornerOf(gravityEffectDir.getNormal()));
+                if (worldDir == null) {
                     continue;
                 }
-                Vec3 localGravity = VS2Helper.worldToShipDirectionFromBlock(
-                        world, blockPos, comp.getCurrentGravityDirection().getVector());
-                if (localGravity != null) {
-                    entityGravityDir = Direction.getNearest(localGravity.x, localGravity.y, localGravity.z);
+                worldDir = worldDir.normalize();
+            } else {
+                worldDir = Vec3.atLowerCornerOf(gravityEffectDir.getNormal());
+            }
+
+            AABB gravityEffectBox = sideDatum.getEffectBox(blockPos, plateDir, world);
+
+            AABB queryBox = gravityEffectBox.inflate(1.0);
+            if (onShip) {
+                queryBox = VS2Helper.shipBoxToWorldBox(world, blockPos, queryBox);
+                if (queryBox == null) {
+                    continue;
                 }
             }
 
-            for (Direction plateDir : Direction.values()) {
-                SideData sideDatum = be.sideData[plateDir.ordinal()];
-                if (sideDatum != null) {
-                    Direction gravityEffectDir = sideDatum.isAttracting ? plateDir : plateDir.getOpposite();
+            List<Entity> entities = world.getEntitiesOfClass(
+                Entity.class, queryBox, e -> EntityTags.canChangeGravity(e)
+            );
 
-                    // when the player has no gravity effect and is touching the plate with their eyes,
-                    // test the eye pos
-                    boolean isOpposite = (entityGravityDir == gravityEffectDir.getOpposite());
+            for (Entity entity : entities) {
+                GravityCapabilityImpl comp = GravityChangerAPI.getGravityComponent(entity);
+                if (comp == null) {
+                    continue;
+                }
 
-                    AABB gravityEffectBox = sideDatum.getEffectBox(blockPos, plateDir, world);
-
-                    Vec3 plateDirVec = Vec3.atLowerCornerOf(plateDir.getNormal());
-                    Vec3 effectCenter = Vec3.atCenterOf(blockPos).add(plateDirVec.scale(0.5));
-
-                    // move the center out a little
-                    // to make the distance to sharing edge different to different plates
-                    double adjustment = 0.1;
-                    Vec3 effectCenterAdjusted = effectCenter.add(plateDirVec.scale(-adjustment));
-
-                    Vec3 testingPos;
-                    if (onShip) {
-                        if (!gravityEffectBox.intersects(shipEntityBox)) {
-                            continue;
-                        }
-                        // Closest point of the entity's ship-space hitbox to the plate center
-                        testingPos = new Vec3(
-                            Mth.clamp(effectCenterAdjusted.x, shipEntityBox.minX, shipEntityBox.maxX),
-                            Mth.clamp(effectCenterAdjusted.y, shipEntityBox.minY, shipEntityBox.maxY),
-                            Mth.clamp(effectCenterAdjusted.z, shipEntityBox.minZ, shipEntityBox.maxZ));
-                    } else {
-                        testingPos = isOpposite ? eyePos : feetPos;
-                        if (!gravityEffectBox.contains(testingPos)) {
-                            continue;
-                        }
-                    }
-
-                    Vec3 deltaVec = testingPos.subtract(effectCenterAdjusted);
-
-                    double distanceToPlane = -deltaVec.dot(plateDirVec);
-                    if (distanceToPlane < -adjustment - 0.001) {
+                AABB collider = getGravityEffectCollider(entity, comp, worldDir, onShip);
+                if (onShip) {
+                    collider = VS2Helper.worldBoxToShipBox(world, blockPos, collider);
+                    if (collider == null) {
                         continue;
                     }
+                }
+                if (!gravityEffectBox.intersects(collider)) {
+                    continue;
+                }
 
-                    Vec3 localVec = RotationUtil.vecWorldToPlayer(deltaVec, plateDir);
-                    double dx = GCUtil.distanceToRange(localVec.x, -0.5, 0.5);
-                    double dz = GCUtil.distanceToRange(localVec.z, -0.5, 0.5);
-                    double distanceToPlate = Math.sqrt(dx * dx + dz * dz + distanceToPlane * distanceToPlane);
+                comp.addPlatingCandidate(worldDir, onShip, sideDatum.getEffectRange(), blockPos);
 
-                    double priority = 1000 - distanceToPlate;
-                    if (isOpposite) {
-                        // reduce the chance of opposite side plating interference
-                        priority -= 10;
-                    }
-                    if (onShip) {
-                        Vec3 worldDir = VS2Helper.shipToWorldDirectionFromBlock(
-                                world, blockPos, Vec3.atLowerCornerOf(gravityEffectDir.getNormal()));
-                        if (worldDir == null) {
-                            continue;
-                        }
-                        // shipRelative, not fromVector: on an axis-aligned ship the world
-                        // direction is exactly cardinal and fromVector would snap it, routing
-                        // the entity into world-space cardinal collision that cannot see ship
-                        // blocks. The ship marker keeps the ship gravity physics pipeline on.
-                        comp.applyGravityDirectionEffect(
-                            GravityDirection.shipRelative(worldDir), null, priority
-                        );
-                    } else {
-                        comp.applyGravityDirectionEffect(
-                            gravityEffectDir, null, priority
-                        );
-                    }
-                    applies = true;
+                // The corner auto-jump math is world-frame; skip it on ships
+                if (!onShip && GravityConfig.autoJumpOnGravityPlateInnerCorner.get()) {
+                    tryToDoCornerAutoJump(blockState, blockPos, entity, comp);
                 }
             }
-
-            // The corner auto-jump math is world-frame; skip it on ships
-            if (applies && !onShip && GravityConfig.autoJumpOnGravityPlateInnerCorner.get()) {
-                tryToDoCornerAutoJump(blockState, blockPos, entity, comp);
-            }
         }
+    }
+
+    /**
+     * The region of the entity that a plate field must touch to claim it (AmethystGravity's
+     * detection collider): a box spanning the entity's feet, one entity-width tall, oriented
+     * by the entity's CURRENT gravity frame so it tracks the body through wall stands and
+     * rotation animations. When the plate pulls opposite to the current gravity (a ceiling
+     * plate overhead), the full hitbox is used so head contact counts.
+     */
+    private static AABB getGravityEffectCollider(
+        Entity entity, GravityCapabilityImpl comp, Vec3 effectWorldDir, boolean onShip
+    ) {
+        GravityDirection current = comp.getCurrentGravityDirection();
+        if (current.getVector().dot(effectWorldDir) < -0.9) {
+            return entity.getBoundingBox();
+        }
+        if (onShip) {
+            // Ship gravity keeps the physics hitbox world-aligned; the whole box is the
+            // most honest representation of where the entity is
+            return entity.getBoundingBox();
+        }
+        double hw = entity.getBbWidth() / 2.0;
+        Vec3 p1 = current.vecPlayerToWorld(new Vec3(hw, 2.0 * hw, hw));
+        Vec3 p2 = current.vecPlayerToWorld(new Vec3(-hw, 0.0, -hw));
+        return new AABB(p1, p2).move(entity.position());
     }
     
     // when approaching an inward corner, do auto-jump to make it smoothly go forward
