@@ -25,6 +25,10 @@ public class UpdateGravityCapabilityPacket
 	// Arbitrary gravity vector for VS ship angles (null if using cardinal direction)
 	@Nullable
 	private final Vec3 arbitraryGravityVector;
+	// Whether the arbitrary direction counts as cardinal. Ship-relative directions on an
+	// axis-aligned ship have a cardinal vector but must NOT re-snap to cardinal on receive,
+	// or the receiver routes them out of the ship gravity physics pipeline.
+	private final boolean arbitraryIsCardinal;
 	// Flag to indicate this is from a camera-only source (VS ship)
 	private final boolean isCameraOnly;
 
@@ -48,6 +52,7 @@ public class UpdateGravityCapabilityPacket
 		this.currentGravityStrength = currentGravityStrength;
 		// Always send arbitrary direction if present (for camera-only effects even when cardinal)
 		this.arbitraryGravityVector = (arbitraryGravity != null) ? arbitraryGravity.getVector() : null;
+		this.arbitraryIsCardinal = arbitraryGravity != null && arbitraryGravity.isCardinal();
 		this.isCameraOnly = isCameraOnly;
 	}
 
@@ -63,8 +68,10 @@ public class UpdateGravityCapabilityPacket
 		boolean hasArbitrary = buf.readBoolean();
 		if (hasArbitrary) {
 			this.arbitraryGravityVector = new Vec3(buf.readDouble(), buf.readDouble(), buf.readDouble());
+			this.arbitraryIsCardinal = buf.readBoolean();
 		} else {
 			this.arbitraryGravityVector = null;
+			this.arbitraryIsCardinal = false;
 		}
 		// Read camera-only flag
 		this.isCameraOnly = buf.readBoolean();
@@ -84,6 +91,7 @@ public class UpdateGravityCapabilityPacket
 			buf.writeDouble(this.arbitraryGravityVector.x);
 			buf.writeDouble(this.arbitraryGravityVector.y);
 			buf.writeDouble(this.arbitraryGravityVector.z);
+			buf.writeBoolean(this.arbitraryIsCardinal);
 		}
 		// Write camera-only flag
 		buf.writeBoolean(this.isCameraOnly);
@@ -105,7 +113,9 @@ public class UpdateGravityCapabilityPacket
 							// Convert arbitrary vector to GravityDirection if present
 							GravityDirection arbitraryDir = null;
 							if (message.arbitraryGravityVector != null) {
-								arbitraryDir = GravityDirection.fromVector(message.arbitraryGravityVector);
+								arbitraryDir = message.arbitraryIsCardinal
+									? GravityDirection.fromVector(message.arbitraryGravityVector)
+									: GravityDirection.shipRelative(message.arbitraryGravityVector);
 							}
 							cap.sync(message.noAnimation, message.baseGravityDirection, message.currentGravityDirection, message.baseGravityStrength, message.currentGravityStrength, arbitraryDir, message.isCameraOnly);
 						});

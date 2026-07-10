@@ -610,6 +610,33 @@ public class VS2Helper {
     }
 
     /**
+     * Transform a world-space AABB to the shipyard-space AABB enclosing it (corner sweep).
+     * Returns null when the block is not on a ship or the transform is unavailable.
+     */
+    @Nullable
+    public static AABB worldBoxToShipBox(Level level, BlockPos blockOnShip, AABB worldBox) {
+        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < 8; i++) {
+            Vec3 corner = new Vec3(
+                    (i & 1) == 0 ? worldBox.minX : worldBox.maxX,
+                    (i & 2) == 0 ? worldBox.minY : worldBox.maxY,
+                    (i & 4) == 0 ? worldBox.minZ : worldBox.maxZ);
+            Vec3 ship = worldToShipPosition(level, blockOnShip, corner);
+            if (ship == null) {
+                return null;
+            }
+            minX = Math.min(minX, ship.x);
+            minY = Math.min(minY, ship.y);
+            minZ = Math.min(minZ, ship.z);
+            maxX = Math.max(maxX, ship.x);
+            maxY = Math.max(maxY, ship.y);
+            maxZ = Math.max(maxZ, ship.z);
+        }
+        return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
+    /**
      * Get the ship-to-world transformation matrix from a ship object
      */
     @Nullable

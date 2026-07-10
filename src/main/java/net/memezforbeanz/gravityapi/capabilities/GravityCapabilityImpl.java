@@ -986,8 +986,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
             // The cardinal animation targets the nearest cardinal; if the real gravity is
             // non-cardinal (ship), retarget from the in-flight rotation to the true
             // direction so rendering never snaps when the cardinal animation finishes.
+            // Skip when the arbitrary vector coincides with the cardinal (axis-aligned
+            // ship): the end rotation is identical and retargeting would only cut the
+            // full-length animation down to the short retarget duration.
             if (entity.level().isClientSide() && animation != null
-                    && arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal()) {
+                    && arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal()
+                    && arbitraryGravityDirection.getVector().distanceToSqr(
+                        Vec3.atLowerCornerOf(currGravityDirection.getNormal())) > 1.0e-6) {
                 long timeMs = entity.level().getGameTime() * 50;
                 GravityDirection from = prevArbitraryGravityDirection != null
                     ? prevArbitraryGravityDirection

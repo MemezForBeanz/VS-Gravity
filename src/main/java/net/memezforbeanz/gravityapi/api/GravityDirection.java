@@ -58,24 +58,44 @@ public class GravityDirection {
         this.vector = Vec3.atLowerCornerOf(direction.getNormal());
         this.nearestDirection = direction;
         this.isCardinal = true;
-        computeQuaternions();
+        computeQuaternions(true);
     }
-    
+
     /**
      * Create a GravityDirection from an arbitrary vector
      * @param gravityVector The direction of gravity pull (will be normalized)
      */
     public GravityDirection(Vec3 gravityVector) {
+        this(gravityVector, false);
+    }
+
+    private GravityDirection(Vec3 gravityVector, boolean forceArbitrary) {
         this.vector = gravityVector.normalize();
         this.nearestDirection = Direction.getNearest(
-            (float) this.vector.x, 
-            (float) this.vector.y, 
+            (float) this.vector.x,
+            (float) this.vector.y,
             (float) this.vector.z
         );
         // Check if this is close enough to a cardinal to be considered cardinal
         Vec3 cardinalVec = Vec3.atLowerCornerOf(nearestDirection.getNormal());
-        this.isCardinal = this.vector.distanceToSqr(cardinalVec) < 0.001;
-        computeQuaternions();
+        boolean vectorIsCardinal = this.vector.distanceToSqr(cardinalVec) < 0.001;
+        this.isCardinal = vectorIsCardinal && !forceArbitrary;
+        // The quaternion basis must follow the vector, not the physics routing flag:
+        // an exactly-cardinal ship-relative direction still needs RotationUtil's bases.
+        computeQuaternions(vectorIsCardinal);
+    }
+
+    /**
+     * Create a ship-relative gravity direction: never treated as cardinal even when the
+     * vector happens to be axis-aligned (a parked, unrotated ship). Cardinal routing would
+     * hand the entity to the world-space cardinal collision mixins, which cannot see ship
+     * blocks; this marker keeps it in the ship gravity physics pipeline.
+     */
+    public static GravityDirection shipRelative(Vec3 vector) {
+        if (vector == null) {
+            return DOWN;
+        }
+        return new GravityDirection(vector, true);
     }
     
     /**
@@ -119,10 +139,10 @@ public class GravityDirection {
      * playerToWorldRotation: rotates (0, -1, 0) to this.vector
      * worldToPlayerRotation: rotates this.vector to (0, -1, 0)
      */
-    private void computeQuaternions() {
+    private void computeQuaternions(boolean useCardinalBases) {
         Vec3 defaultDown = new Vec3(0, -1, 0);
 
-        if (this.isCardinal) {
+        if (useCardinalBases) {
             // Cardinal directions must use the exact same bases as RotationUtil's
             // vecWorldToPlayer/vecPlayerToWorld switch tables. The generic axis-angle
             // path below picks the minimal rotation, whose roll about the gravity axis
@@ -305,8 +325,10 @@ public class GravityDirection {
         if (x == 0 && y == 0 && z == 0) {
             return DOWN;
         }
-        
-        return new GravityDirection(x, y, z);
+
+        // The tag said non-cardinal: preserve that through round-trips. Re-detecting would
+        // snap an exactly-axis-aligned ship-relative direction back to cardinal.
+        return shipRelative(new Vec3(x, y, z));
     }
     
     /**

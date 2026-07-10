@@ -48,8 +48,14 @@ public class GravityCameraState {
         long dtMs = lastUpdateTime == 0 ? Long.MAX_VALUE : timeMs - lastUpdateTime;
         lastUpdateTime = timeMs;
 
-        // If gravity is down, smoothly transition back to identity rotation
-        if (gravityDirection.equals(GravityDirection.DOWN)) {
+        RotationAnimation animation = GravityChangerAPI.getRotationAnimation(entity);
+        boolean animating = animation != null && animation.isInAnimation();
+
+        // If gravity is down and no rotation animation is running, ease back to identity.
+        // While an animation IS running (a plate/field flip targeting DOWN), fall through to
+        // the tracking path so the camera follows the same smootherstep sweep as the entity
+        // model - short-circuiting here yanked the view to identity on every return to DOWN.
+        if (gravityDirection.equals(GravityDirection.DOWN) && !animating) {
             if (lastSmoothedRotation == null) {
                 return new Quaternionf();
             }

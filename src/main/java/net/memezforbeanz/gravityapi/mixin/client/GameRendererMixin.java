@@ -61,9 +61,10 @@ public abstract class GameRendererMixin {
             boolean hasNonDownGravity = !gravityDirection.equals(GravityDirection.DOWN);
             boolean hasAnimation = animation != null && animation.isInAnimation();
 
-            if (!hasNonDownGravity && !hasAnimation) {
-                // Reset the camera state when returning to normal gravity
-                GravityCameraState.reset();
+            if (!hasNonDownGravity && !hasAnimation && !GravityCameraState.hasCachedRotation()) {
+                // Fully back to normal gravity AND the smoothed camera has finished easing
+                // to identity (the state resets itself once it gets there). Handing back to
+                // vanilla any earlier snaps off whatever residual rotation is still applied.
                 return;
             }
             ci.cancel();

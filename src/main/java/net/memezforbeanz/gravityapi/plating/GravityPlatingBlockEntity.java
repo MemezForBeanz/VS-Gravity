@@ -278,10 +278,13 @@ public class GravityPlatingBlockEntity extends BlockEntity {
             Vec3 feetPos = entity.position();
             Vec3 eyePos = entity.getEyePosition();
             Direction entityGravityDir = comp.getCurrGravityDirection();
+            AABB shipEntityBox = null;
             if (onShip) {
-                feetPos = VS2Helper.worldToShipPosition(world, blockPos, feetPos);
-                eyePos = VS2Helper.worldToShipPosition(world, blockPos, eyePos);
-                if (feetPos == null || eyePos == null) {
+                // Under ship gravity the hitbox stays world-aligned, so a single feet/eye
+                // point drifts out of the 1-block effect box (e.g. hanging vertically next
+                // to a wall plate). Detect by hitbox overlap in ship space instead.
+                shipEntityBox = VS2Helper.worldBoxToShipBox(world, blockPos, entity.getBoundingBox());
+                if (shipEntityBox == null) {
                     continue;
                 }
                 Vec3 localGravity = VS2Helper.worldToShipDirectionFromBlock(
@@ -299,12 +302,8 @@ public class GravityPlatingBlockEntity extends BlockEntity {
                     // when the player has no gravity effect and is touching the plate with their eyes,
                     // test the eye pos
                     boolean isOpposite = (entityGravityDir == gravityEffectDir.getOpposite());
-                    Vec3 testingPos = isOpposite ? eyePos : feetPos;
 
                     AABB gravityEffectBox = sideDatum.getEffectBox(blockPos, plateDir, world);
-                    if (!gravityEffectBox.contains(testingPos)) {
-                        continue;
-                    }
 
                     Vec3 plateDirVec = Vec3.atLowerCornerOf(plateDir.getNormal());
                     Vec3 effectCenter = Vec3.atCenterOf(blockPos).add(plateDirVec.scale(0.5));
@@ -313,6 +312,23 @@ public class GravityPlatingBlockEntity extends BlockEntity {
                     // to make the distance to sharing edge different to different plates
                     double adjustment = 0.1;
                     Vec3 effectCenterAdjusted = effectCenter.add(plateDirVec.scale(-adjustment));
+
+                    Vec3 testingPos;
+                    if (onShip) {
+                        if (!gravityEffectBox.intersects(shipEntityBox)) {
+                            continue;
+                        }
+                        // Closest point of the entity's ship-space hitbox to the plate center
+                        testingPos = new Vec3(
+                            Mth.clamp(effectCenterAdjusted.x, shipEntityBox.minX, shipEntityBox.maxX),
+                            Mth.clamp(effectCenterAdjusted.y, shipEntityBox.minY, shipEntityBox.maxY),
+                            Mth.clamp(effectCenterAdjusted.z, shipEntityBox.minZ, shipEntityBox.maxZ));
+                    } else {
+                        testingPos = isOpposite ? eyePos : feetPos;
+                        if (!gravityEffectBox.contains(testingPos)) {
+                            continue;
+                        }
+                    }
 
                     Vec3 deltaVec = testingPos.subtract(effectCenterAdjusted);
 
@@ -337,8 +353,12 @@ public class GravityPlatingBlockEntity extends BlockEntity {
                         if (worldDir == null) {
                             continue;
                         }
+                        // shipRelative, not fromVector: on an axis-aligned ship the world
+                        // direction is exactly cardinal and fromVector would snap it, routing
+                        // the entity into world-space cardinal collision that cannot see ship
+                        // blocks. The ship marker keeps the ship gravity physics pipeline on.
                         comp.applyGravityDirectionEffect(
-                            GravityDirection.fromVector(worldDir.normalize()), null, priority
+                            GravityDirection.shipRelative(worldDir), null, priority
                         );
                     } else {
                         comp.applyGravityDirectionEffect(
