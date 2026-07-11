@@ -3,6 +3,7 @@ package net.memezforbeanz.gravityapi.mixin;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
@@ -27,6 +28,9 @@ public abstract class MobMixin {
 	@Shadow
 	protected PathNavigation navigation;
     
+    @Unique
+    private int gravityapi$ticksSinceNonDownGravity = 0;
+
     @Inject(at = @At("HEAD"), method = "tick", cancellable = true)
     private void tick(CallbackInfo ci)
     {
@@ -34,6 +38,7 @@ public abstract class MobMixin {
         Direction gravityDirection = GravityChangerAPI.getGravityDirection(mob);
     	if(gravityDirection != Direction.DOWN)
     	{
+    		this.gravityapi$ticksSinceNonDownGravity = 0;
 			if(!(this.navigation instanceof GravityPathNavigation))
 			{
 				if(this.navigation instanceof GroundPathNavigation)
@@ -44,7 +49,13 @@ public abstract class MobMixin {
     	}
     	else if(this.navigation instanceof GravityPathNavigation)
     	{
-    		this.navigation = this.createNavigation(mob.level);
+    		// Hysteresis: at a field edge gravity flips DOWN<->non-DOWN every few ticks, and each
+    		// swap discards the active path - mobs stall and navigation objects churn. Only swap
+    		// back to vanilla navigation once gravity has been stably DOWN.
+    		if(++this.gravityapi$ticksSinceNonDownGravity >= 40)
+    		{
+    			this.navigation = this.createNavigation(mob.level);
+    		}
     	}
     }
     

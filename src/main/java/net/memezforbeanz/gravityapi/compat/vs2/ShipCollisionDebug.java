@@ -16,8 +16,10 @@ public final class ShipCollisionDebug {
 
     public static final Logger LOG = LoggerFactory.getLogger("VSGravityCollision");
 
-    /** Master switch for ship-collision diagnostics. */
-    public static boolean ENABLED = true;
+    /** Master switch for ship-collision diagnostics. Keep off in releases: when on it logs every
+     * collision sub-step on the server AND render threads (tens of thousands of lines per session,
+     * measurable tick cost + GC churn). */
+    public static boolean ENABLED = false;
 
     /** Extra-verbose per-substep logs (detection, ctx transforms, status). Off by default. */
     public static boolean VERBOSE = false;

@@ -32,6 +32,7 @@
 		"LookAtPlayerGoalMixin",
 		"LookControlMixin",
 		"MobMixin",
+		"MoveControlMixin",
 		"PiglinMixin",
 		"PillagerMixin",
 		"PistonMovingBlockEntityMixin",
