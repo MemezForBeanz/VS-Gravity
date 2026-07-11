@@ -442,11 +442,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
 
     public void updateGravityStatus(boolean sendPacketIfNecessary) {
         // Always check if entity is in a gravity generator field (for hitbox calculations)
-        // This needs to run even for entities that accept server sync
+        // This needs to run even for entities that accept server sync.
+        // Computed once here and reused below - the registry walk does a block-entity lookup and
+        // (on ships) a transform per generator, so querying twice per entity per tick adds up.
+        GravityGeneratorRegistry.GravityFieldResult registryFieldResult =
+                GravityGeneratorRegistry.getGravityFieldEffect(entity);
         if (VS2Integration.isVS2Loaded()) {
-            GravityGeneratorRegistry.GravityFieldResult fieldResult =
-                    GravityGeneratorRegistry.getGravityFieldEffect(entity);
-            inGravityGeneratorField = (fieldResult != null);
+            inGravityGeneratorField = (registryFieldResult != null);
         }
 
         // for the remote players and non-player entities,
@@ -489,8 +491,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 }
 
                 // Check for gravity generator fields (applies to all entities)
-                GravityGeneratorRegistry.GravityFieldResult fieldResult =
-                        GravityGeneratorRegistry.getGravityFieldEffect(entity);
+                GravityGeneratorRegistry.GravityFieldResult fieldResult = registryFieldResult;
 
                 // Update the cached flag for hitbox calculations
                 inGravityGeneratorField = (fieldResult != null);

@@ -26,6 +26,7 @@ import net.memezforbeanz.gravityapi.compat.vs2.VS2Helper;
 import net.memezforbeanz.gravityapi.compat.vs2.VS2Integration;
 import net.memezforbeanz.gravityapi.config.GravityConfig;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
+import net.memezforbeanz.gravityapi.util.ShipIntersectionCache;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -46,7 +47,30 @@ import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
 @Mixin(Entity.class)
-public abstract class EntityMixin {
+public abstract class EntityMixin implements ShipIntersectionCache {
+
+    @Unique
+    private Object gravityapi$cachedShip;
+
+    @Unique
+    private long gravityapi$shipCacheTime = Long.MIN_VALUE;
+
+    @Override
+    public Object gravityapi$getCachedShip() {
+        return this.gravityapi$cachedShip;
+    }
+
+    @Override
+    public long gravityapi$getShipCacheTime() {
+        return this.gravityapi$shipCacheTime;
+    }
+
+    @Override
+    public void gravityapi$setCachedShip(long gameTime, Object ship) {
+        this.gravityapi$shipCacheTime = gameTime;
+        this.gravityapi$cachedShip = ship;
+    }
+
     @Shadow
     private Vec3 position;
     

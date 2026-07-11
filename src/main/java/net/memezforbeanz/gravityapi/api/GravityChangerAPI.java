@@ -48,18 +48,16 @@ public abstract class GravityChangerAPI {
      * When true, hitbox should NOT be transformed (only camera rotates).
      */
     public static boolean isArbitraryGravity(Entity entity) {
-        // First, check if entity is on a VS ship - this is the most reliable check
-        // and should always prevent hitbox transformation for entities on ships
-        if (VS2Integration.isVS2Loaded() && VS2Integration.isOnShip(entity)) {
+        // Check the capability flag first: it's a plain field read, while the ship check below
+        // costs a VS2 ship-intersection query (per-tick cached, but still the expensive half).
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        if (comp != null && comp.isArbitraryGravity()) {
             return true;
         }
 
-        // Then check the capability for other cases
-        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
-        if (comp == null) {
-            return false;
-        }
-        return comp.isArbitraryGravity();
+        // Entities on a VS ship are always arbitrary - this is the most reliable check
+        // and should always prevent hitbox transformation for entities on ships
+        return VS2Integration.isVS2Loaded() && VS2Integration.isOnShip(entity);
     }
 
     /**
@@ -133,12 +131,16 @@ public abstract class GravityChangerAPI {
     }
     
     public static GravityCapabilityImpl getGravityComponent(Entity entity) {
-    	GravityCapabilityImpl cap = (GravityCapabilityImpl) entity.getCapability(GravityCapabilities.GRAVITY).orElse(new GravityCapabilityImpl());
-        return cap;
+        GravityCapabilityImpl cap = getGravityComponentEarly(entity);
+        // Fresh throwaway impl only when the capability is genuinely absent - callers may mutate
+        // the returned component, so a shared fallback instance would leak state across entities.
+        return cap != null ? cap : new GravityCapabilityImpl();
     }
-    
+
     public static @Nullable GravityCapabilityImpl getGravityComponentEarly(Entity entity) {
-        return getGravityComponent(entity);
+        // orElse(new ...) is evaluated eagerly in Java, so the old delegation allocated a
+        // GravityCapabilityImpl on every gravity lookup - this is the hottest call in the mod.
+        return (GravityCapabilityImpl) entity.getCapability(GravityCapabilities.GRAVITY).resolve().orElse(null);
     }
     
     /**

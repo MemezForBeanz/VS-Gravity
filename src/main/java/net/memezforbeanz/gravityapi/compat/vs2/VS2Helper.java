@@ -1,5 +1,6 @@
 package net.memezforbeanz.gravityapi.compat.vs2;
 
+import net.memezforbeanz.gravityapi.util.ShipIntersectionCache;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
@@ -10,7 +11,10 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Helper class that directly interacts with VS2 API using reflection.
@@ -23,6 +27,42 @@ public class VS2Helper {
     private static Method getShipManagingPosMethod = null;
     private static Method getShipsIntersectingMethod = null;
     private static boolean initAttempted = false;
+
+    // Reflection is unavoidable here (no compile-time VS2 linkage), but string-based
+    // getMethod/getConstructor/forName lookups are not - they dominated the cost when these
+    // helpers ran per entity per tick (and per collide sub-step). Cache every lookup; a cached
+    // Method.invoke JITs to near-direct-call cost.
+    private static final Map<Class<?>, Map<String, Method>> METHOD_CACHE = new ConcurrentHashMap<>();
+    private static volatile Class<?> vector3dClassCached = null;
+    private static volatile Constructor<?> vector3dCtorCached = null;
+
+    private static Method cachedMethod(Class<?> cls, String name, Class<?>... params) throws NoSuchMethodException {
+        Map<String, Method> byName = METHOD_CACHE.computeIfAbsent(cls, k -> new ConcurrentHashMap<>());
+        Method m = byName.get(name);
+        if (m == null) {
+            m = cls.getMethod(name, params);
+            byName.put(name, m);
+        }
+        return m;
+    }
+
+    private static Class<?> vector3dClass() throws ClassNotFoundException {
+        Class<?> cls = vector3dClassCached;
+        if (cls == null) {
+            cls = Class.forName("org.joml.Vector3d");
+            vector3dClassCached = cls;
+        }
+        return cls;
+    }
+
+    private static Object newVector3d(double x, double y, double z) throws ReflectiveOperationException {
+        Constructor<?> ctor = vector3dCtorCached;
+        if (ctor == null) {
+            ctor = vector3dClass().getConstructor(double.class, double.class, double.class);
+            vector3dCtorCached = ctor;
+        }
+        return ctor.newInstance(x, y, z);
+    }
 
     /**
      * Initialize reflection methods
@@ -58,7 +98,7 @@ public class VS2Helper {
         Object ship = getShipEntityIsOn(entity);
         if (ship != null) {
             try {
-                Method getIdMethod = ship.getClass().getMethod("getId");
+                Method getIdMethod = cachedMethod(ship.getClass(), "getId");
                 return (Long) getIdMethod.invoke(ship);
             } catch (Exception e) {
                 return null;
@@ -84,6 +124,16 @@ public class VS2Helper {
         }
 
         Level level = entity.level();
+
+        // The scan below is hit from the collision pipeline and hitbox checks several times per
+        // entity per tick; the supporting ship can't meaningfully change mid-tick, so serve repeat
+        // queries within the same game tick from the entity's cache (null results included).
+        long gameTime = level.getGameTime();
+        ShipIntersectionCache cache = entity instanceof ShipIntersectionCache c ? c : null;
+        if (cache != null && cache.gravityapi$getShipCacheTime() == gameTime) {
+            return cache.gravityapi$getCachedShip();
+        }
+
         // Inflate slightly so the supporting ship is still found in the instant the entity's feet are
         // a hair above the deck (e.g. just before/while settling onto it).
         AABB worldBox = entity.getBoundingBox().inflate(0.5D);
@@ -93,6 +143,9 @@ public class VS2Helper {
             if (!(ships instanceof Iterable<?> iterable)) {
                 if (ShipCollisionDebug.shouldLog(entity)) {
                     ShipCollisionDebug.log("[detect] getShipsIntersecting returned non-iterable: {}", ships);
+                }
+                if (cache != null) {
+                    cache.gravityapi$setCachedShip(gameTime, null);
                 }
                 return null;
             }
@@ -120,10 +173,16 @@ public class VS2Helper {
                         entity.getName().getString(), entityPos, worldBox, count,
                         best == null ? "none" : ("id=" + safeShipId(best)));
             }
+            if (cache != null) {
+                cache.gravityapi$setCachedShip(gameTime, best);
+            }
             return best;
         } catch (Exception e) {
             if (ShipCollisionDebug.shouldLog(entity)) {
                 ShipCollisionDebug.log("[detect] getShipsIntersecting threw: {}", e.toString());
+            }
+            if (cache != null) {
+                cache.gravityapi$setCachedShip(gameTime, null);
             }
             return null;
         }
@@ -132,7 +191,7 @@ public class VS2Helper {
     /** Best-effort ship id for logging. */
     private static Object safeShipId(Object ship) {
         try {
-            return ship.getClass().getMethod("getId").invoke(ship);
+            return cachedMethod(ship.getClass(), "getId").invoke(ship);
         } catch (Exception e) {
             return "?";
         }
@@ -145,17 +204,17 @@ public class VS2Helper {
      */
     private static double worldAabbCenterDistanceSq(Object ship, Vec3 worldPos) {
         try {
-            Method getWorldAABBMethod = ship.getClass().getMethod("getWorldAABB");
+            Method getWorldAABBMethod = cachedMethod(ship.getClass(), "getWorldAABB");
             Object aabb = getWorldAABBMethod.invoke(ship);
             if (aabb == null) {
                 return Double.MAX_VALUE;
             }
-            double cx = ((Double) aabb.getClass().getMethod("minX").invoke(aabb)
-                    + (Double) aabb.getClass().getMethod("maxX").invoke(aabb)) * 0.5D;
-            double cy = ((Double) aabb.getClass().getMethod("minY").invoke(aabb)
-                    + (Double) aabb.getClass().getMethod("maxY").invoke(aabb)) * 0.5D;
-            double cz = ((Double) aabb.getClass().getMethod("minZ").invoke(aabb)
-                    + (Double) aabb.getClass().getMethod("maxZ").invoke(aabb)) * 0.5D;
+            double cx = ((Double) cachedMethod(aabb.getClass(), "minX").invoke(aabb)
+                    + (Double) cachedMethod(aabb.getClass(), "maxX").invoke(aabb)) * 0.5D;
+            double cy = ((Double) cachedMethod(aabb.getClass(), "minY").invoke(aabb)
+                    + (Double) cachedMethod(aabb.getClass(), "maxY").invoke(aabb)) * 0.5D;
+            double cz = ((Double) cachedMethod(aabb.getClass(), "minZ").invoke(aabb)
+                    + (Double) cachedMethod(aabb.getClass(), "maxZ").invoke(aabb)) * 0.5D;
             double dx = cx - worldPos.x;
             double dy = cy - worldPos.y;
             double dz = cz - worldPos.z;
@@ -173,16 +232,16 @@ public class VS2Helper {
         Object ship = getShipEntityIsOn(entity);
         if (ship != null) {
             try {
-                Method getTransformMethod = ship.getClass().getMethod("getTransform");
+                Method getTransformMethod = cachedMethod(ship.getClass(), "getTransform");
                 Object transform = getTransformMethod.invoke(ship);
-                Method getRotationMethod = transform.getClass().getMethod("getShipToWorldRotation");
+                Method getRotationMethod = cachedMethod(transform.getClass(), "getShipToWorldRotation");
                 Object quaternion = getRotationMethod.invoke(transform);
 
                 // Extract x, y, z, w from the quaternion using reflection
-                Method xMethod = quaternion.getClass().getMethod("x");
-                Method yMethod = quaternion.getClass().getMethod("y");
-                Method zMethod = quaternion.getClass().getMethod("z");
-                Method wMethod = quaternion.getClass().getMethod("w");
+                Method xMethod = cachedMethod(quaternion.getClass(), "x");
+                Method yMethod = cachedMethod(quaternion.getClass(), "y");
+                Method zMethod = cachedMethod(quaternion.getClass(), "z");
+                Method wMethod = cachedMethod(quaternion.getClass(), "w");
 
                 double x = (Double) xMethod.invoke(quaternion);
                 double y = (Double) yMethod.invoke(quaternion);
@@ -209,18 +268,17 @@ public class VS2Helper {
 
         try {
             // Create a new Vector3d with the direction
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(worldDir.x, worldDir.y, worldDir.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(worldDir.x, worldDir.y, worldDir.z);
 
             // Call transformDirection on the matrix
-            Method transformMethod = matrix.getClass().getMethod("transformDirection", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformDirection", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
             // Extract x, y, z from result
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -244,18 +302,17 @@ public class VS2Helper {
 
         try {
             // Create a new Vector3d with the direction
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(shipDir.x, shipDir.y, shipDir.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(shipDir.x, shipDir.y, shipDir.z);
 
             // Call transformDirection on the matrix
-            Method transformMethod = matrix.getClass().getMethod("transformDirection", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformDirection", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
             // Extract x, y, z from result
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -287,18 +344,17 @@ public class VS2Helper {
 
         try {
             // Create a new Vector3d with the position
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(worldPos.x, worldPos.y, worldPos.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(worldPos.x, worldPos.y, worldPos.z);
 
             // Call transformPosition on the matrix
-            Method transformMethod = matrix.getClass().getMethod("transformPosition", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformPosition", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
             // Extract x, y, z from result
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -322,18 +378,17 @@ public class VS2Helper {
 
         try {
             // Create a new Vector3d with the position
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(shipPos.x, shipPos.y, shipPos.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(shipPos.x, shipPos.y, shipPos.z);
 
             // Call transformPosition on the matrix
-            Method transformMethod = matrix.getClass().getMethod("transformPosition", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformPosition", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
             // Extract x, y, z from result
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -353,9 +408,9 @@ public class VS2Helper {
         Object ship = getShipEntityIsOn(entity);
         if (ship != null) {
             try {
-                Method getTransformMethod = ship.getClass().getMethod("getTransform");
+                Method getTransformMethod = cachedMethod(ship.getClass(), "getTransform");
                 Object transform = getTransformMethod.invoke(ship);
-                Method getMatrixMethod = transform.getClass().getMethod("getShipToWorld");
+                Method getMatrixMethod = cachedMethod(transform.getClass(), "getShipToWorld");
                 return getMatrixMethod.invoke(transform);
             } catch (Exception e) {
                 return null;
@@ -372,9 +427,9 @@ public class VS2Helper {
         Object ship = getShipEntityIsOn(entity);
         if (ship != null) {
             try {
-                Method getTransformMethod = ship.getClass().getMethod("getTransform");
+                Method getTransformMethod = cachedMethod(ship.getClass(), "getTransform");
                 Object transform = getTransformMethod.invoke(ship);
-                Method getMatrixMethod = transform.getClass().getMethod("getWorldToShip");
+                Method getMatrixMethod = cachedMethod(transform.getClass(), "getWorldToShip");
                 return getMatrixMethod.invoke(transform);
             } catch (Exception e) {
                 return null;
@@ -421,7 +476,7 @@ public class VS2Helper {
         Object ship = getShipAtBlock(level, pos);
         if (ship != null) {
             try {
-                Method getIdMethod = ship.getClass().getMethod("getId");
+                Method getIdMethod = cachedMethod(ship.getClass(), "getId");
                 return (Long) getIdMethod.invoke(ship);
             } catch (Exception e) {
                 return null;
@@ -448,16 +503,15 @@ public class VS2Helper {
         }
 
         try {
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(shipPos.x, shipPos.y, shipPos.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(shipPos.x, shipPos.y, shipPos.z);
 
-            Method transformMethod = matrix.getClass().getMethod("transformPosition", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformPosition", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -487,16 +541,15 @@ public class VS2Helper {
         }
 
         try {
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(shipDir.x, shipDir.y, shipDir.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(shipDir.x, shipDir.y, shipDir.z);
 
-            Method transformMethod = matrix.getClass().getMethod("transformDirection", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformDirection", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -524,16 +577,15 @@ public class VS2Helper {
         }
 
         try {
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(worldPos.x, worldPos.y, worldPos.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(worldPos.x, worldPos.y, worldPos.z);
 
-            Method transformMethod = matrix.getClass().getMethod("transformPosition", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformPosition", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -561,16 +613,15 @@ public class VS2Helper {
         }
 
         try {
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(worldDir.x, worldDir.y, worldDir.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(worldDir.x, worldDir.y, worldDir.z);
 
-            Method transformMethod = matrix.getClass().getMethod("transformDirection", vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), "transformDirection", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -646,13 +697,13 @@ public class VS2Helper {
         }
 
         try {
-            Method getTransformMethod = ship.getClass().getMethod("getTransform");
+            Method getTransformMethod = cachedMethod(ship.getClass(), "getTransform");
             Object transform = getTransformMethod.invoke(ship);
             if (transform == null) {
                 LOGGER.warn("[VS2Helper] getShipToWorldMatrixFromShip: getTransform() returned null");
                 return null;
             }
-            Method getMatrixMethod = transform.getClass().getMethod("getShipToWorld");
+            Method getMatrixMethod = cachedMethod(transform.getClass(), "getShipToWorld");
             Object matrix = getMatrixMethod.invoke(transform);
             if (matrix == null) {
                 LOGGER.warn("[VS2Helper] getShipToWorldMatrixFromShip: getShipToWorld() returned null");
@@ -674,9 +725,9 @@ public class VS2Helper {
         }
 
         try {
-            Method getTransformMethod = ship.getClass().getMethod("getTransform");
+            Method getTransformMethod = cachedMethod(ship.getClass(), "getTransform");
             Object transform = getTransformMethod.invoke(ship);
-            Method getMatrixMethod = transform.getClass().getMethod("getWorldToShip");
+            Method getMatrixMethod = cachedMethod(transform.getClass(), "getWorldToShip");
             return getMatrixMethod.invoke(transform);
         } catch (Exception e) {
             return null;
@@ -705,16 +756,15 @@ public class VS2Helper {
             return null;
         }
         try {
-            Class<?> vector3dClass = Class.forName("org.joml.Vector3d");
-            Object vector = vector3dClass.getConstructor(double.class, double.class, double.class)
-                    .newInstance(vec.x, vec.y, vec.z);
+            Class<?> vector3dClass = vector3dClass();
+            Object vector = newVector3d(vec.x, vec.y, vec.z);
 
-            Method transformMethod = matrix.getClass().getMethod(methodName, vector3dClass);
+            Method transformMethod = cachedMethod(matrix.getClass(), methodName, vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            Method xMethod = result.getClass().getMethod("x");
-            Method yMethod = result.getClass().getMethod("y");
-            Method zMethod = result.getClass().getMethod("z");
+            Method xMethod = cachedMethod(result.getClass(), "x");
+            Method yMethod = cachedMethod(result.getClass(), "y");
+            Method zMethod = cachedMethod(result.getClass(), "z");
 
             double x = (Double) xMethod.invoke(result);
             double y = (Double) yMethod.invoke(result);
@@ -952,7 +1002,7 @@ public class VS2Helper {
             if (getDraggingInformationMethod == null || setLastShipStoodOnMethod == null) {
                 return false;
             }
-            Long shipId = (Long) ship.getClass().getMethod("getId").invoke(ship);
+            Long shipId = (Long) cachedMethod(ship.getClass(), "getId").invoke(ship);
             Object draggingInfo = getDraggingInformationMethod.invoke(entity);
             setLastShipStoodOnMethod.invoke(draggingInfo, shipId);
             return true;

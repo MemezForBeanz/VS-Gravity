@@ -82,7 +82,17 @@ public class ShipGravityCapabilityImpl implements IShipGravityCapability {
         if (entity == null || !VS2Integration.isVS2Loaded()) {
             return;
         }
-        
+
+        // The ship query below (getShipsIntersecting, a world-AABB scan over loaded ships) is only
+        // consumed by auto-align transitions and the ship-relative re-apply. With both features off
+        // - the default for every entity - running it per entity per tick was the single biggest
+        // server cost of this mod. lastShipId may go stale here; auto-align treats null as
+        // "wasn't on a ship", which is the correct enter-transition when it gets enabled later.
+        if (!autoAlignEnabled && !shipGravityEnabled) {
+            lastShipId = null;
+            return;
+        }
+
         Long currentShipId = VS2Integration.getShipMountedOn(entity);
         
         // Handle auto-alignment when stepping onto a new ship
