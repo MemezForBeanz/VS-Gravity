@@ -225,6 +225,66 @@ public class VS2Helper {
     }
 
     /**
+     * Rotation the supporting ship underwent this game tick, as the world-frame delta quaternion
+     * from the ship's previous-tick transform to its current transform - the same
+     * prevTickTransform -> transform delta VS2's own EntityDragger uses to carry entities along.
+     * Returns {@code null} when the entity isn't on a ship, the delta is negligible, or the
+     * transforms can't be read.
+     *
+     * <p>Used to re-anchor stored world-space ship-gravity directions each tick: an effect vector
+     * computed by a block entity last tick (or held by the effect linger) is expressed in a stale
+     * ship orientation; rotating it by this delta re-expresses it in the ship's current one, so
+     * "down" tracks a spinning ship instead of lagging it.
+     */
+    @Nullable
+    public static org.joml.Quaterniond getShipRotationDeltaThisTick(Entity entity) {
+        Object ship = getShipEntityIsOn(entity);
+        if (ship == null) {
+            return null;
+        }
+        try {
+            Object transform = cachedMethod(ship.getClass(), "getTransform").invoke(ship);
+            Object prevTransform;
+            try {
+                prevTransform = cachedMethod(ship.getClass(), "getPrevTickTransform").invoke(ship);
+            } catch (NoSuchMethodException e) {
+                // Older VS2 core API name
+                prevTransform = cachedMethod(ship.getClass(), "getPrevTickShipTransform").invoke(ship);
+            }
+            if (transform == null || prevTransform == null) {
+                return null;
+            }
+            org.joml.Quaterniond curr = readShipToWorldRotation(transform);
+            org.joml.Quaterniond prev = readShipToWorldRotation(prevTransform);
+            if (curr == null || prev == null) {
+                return null;
+            }
+            // delta * prev == curr  ->  delta = curr * prev^-1 (conjugate: unit quaternions)
+            org.joml.Quaterniond delta = curr.mul(prev.conjugate(), new org.joml.Quaterniond());
+            // Identity (parked ship) - skip the downstream work. cos(theta/2) ~ 1.
+            if (Math.abs(delta.w) > 0.99999999) {
+                return null;
+            }
+            return delta.normalize();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    @Nullable
+    private static org.joml.Quaterniond readShipToWorldRotation(Object transform) throws Exception {
+        Object quaternion = cachedMethod(transform.getClass(), "getShipToWorldRotation").invoke(transform);
+        if (quaternion == null) {
+            return null;
+        }
+        return new org.joml.Quaterniond(
+                (Double) cachedMethod(quaternion.getClass(), "x").invoke(quaternion),
+                (Double) cachedMethod(quaternion.getClass(), "y").invoke(quaternion),
+                (Double) cachedMethod(quaternion.getClass(), "z").invoke(quaternion),
+                (Double) cachedMethod(quaternion.getClass(), "w").invoke(quaternion));
+    }
+
+    /**
      * Get the ship's rotation as a double array [x, y, z, w], or null if not on a ship
      */
     @Nullable

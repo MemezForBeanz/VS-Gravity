@@ -267,7 +267,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
         tickShipGravity();
 
         updateGravityStatus(true);
-        
+
+        // AFTER the update (so it also corrects effects that were delay-applied inside it, whose
+        // vectors were computed from last tick's ship transform), re-anchor ship-relative gravity
+        // to the ship's current rotation - otherwise "down" lags a spinning ship by at least one
+        // tick (more under effect linger) and the collision frame diverges from the geometry.
+        reanchorArbitraryToShipRotation();
+
         applyGravityChange();
         
         if (!entity.level.isClientSide()) {
@@ -276,7 +282,57 @@ public class GravityCapabilityImpl implements IGravityCapability {
             }
         }
     }
-    
+
+    /**
+     * Rotate the stored ship-relative (arbitrary non-cardinal) gravity vectors by the rotation the
+     * supporting ship underwent this tick. Stored directions are world-space snapshots: the
+     * applying block entity computed them from the ship transform of the tick it ran in, and the
+     * effect linger can hold them for several more ticks. On a rotating ship every such snapshot
+     * points where "down" USED to be - the entity then collides in a frame that no longer matches
+     * the ship geometry, which is the clip-through/lagging-gravity bug on spinning ships.
+     */
+    private void reanchorArbitraryToShipRotation() {
+        if (!VS2Integration.isVS2Loaded()) {
+            return;
+        }
+        // Camera-only (registry) effects are computed live inside this tick's update from the
+        // ship's CURRENT transform - only rotate those when the linger is holding a stale copy.
+        // Per-entity effects (bridge fields, plating) are delay-applied from last tick's block
+        // tick and are always one transform behind.
+        if (isCameraOnlyGravity && ticksSinceLastEffect == 0) {
+            return;
+        }
+        boolean hasArbitrary = arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal();
+        boolean hasLinger = lingerArbitrary != null && !lingerArbitrary.isCardinal();
+        if (!hasArbitrary && !hasLinger) {
+            return;
+        }
+        org.joml.Quaterniond delta =
+                net.memezforbeanz.gravityapi.compat.vs2.VS2Helper.getShipRotationDeltaThisTick(entity);
+        if (delta == null) {
+            return;
+        }
+        GravityDirection rotatedArbitrary = hasArbitrary ? rotatedBy(arbitraryGravityDirection, delta) : null;
+        if (hasLinger) {
+            // The linger slot usually aliases the live direction; rotate it exactly once.
+            lingerArbitrary = (lingerArbitrary == arbitraryGravityDirection && rotatedArbitrary != null)
+                    ? rotatedArbitrary
+                    : rotatedBy(lingerArbitrary, delta);
+        }
+        // currGravityDirection is deliberately left alone: the effect-application path manages it
+        // (camera-only ship gravity keeps it DOWN so the hitbox stays untransformed), and the next
+        // fresh effect updates it through the normal angle-limiting/sync path if the nearest
+        // cardinal genuinely changes.
+        if (rotatedArbitrary != null) {
+            arbitraryGravityDirection = rotatedArbitrary;
+        }
+    }
+
+    private static GravityDirection rotatedBy(GravityDirection direction, org.joml.Quaterniond rotation) {
+        net.minecraft.world.phys.Vec3 v = direction.getVector();
+        org.joml.Vector3d rotated = rotation.transform(new org.joml.Vector3d(v.x, v.y, v.z));
+        return GravityDirection.shipRelative(new net.minecraft.world.phys.Vec3(rotated.x, rotated.y, rotated.z));
+    }
 
     /**
      * Tick the ship gravity capability if VS2 is present

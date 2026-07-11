@@ -182,6 +182,15 @@ public abstract class EntityMixin implements ShipIntersectionCache {
 		if (!GravityChangerAPI.isShipGravityPhysics(self)) {
 			return;
 		}
+
+		// Keep VS2's EntityDragger tracking this entity on EVERY move under ship gravity, not just
+		// when the deck-support probe hits: a fast-spinning ship is exactly when the probe drops
+		// out, and losing the dragger then lets the ship rotate out from under (or into) the
+		// entity, compounding the clipping. Stock VS2 refreshes this in
+		// adjustEntityMovementForShipCollisions, which our collision mixin cancels for these
+		// entities. The ship lookup is served from the per-tick cache, so this is cheap.
+		boolean dragged = VS2Helper.markStandingOnShip(self);
+
 		GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(self);
 		Vec3 worldDown = gravityDirection.vecPlayerToWorld(new Vec3(0.0D, -1.0D, 0.0D));
 		// deltaMovement is in the local (gravity) frame for arbitrary gravity: -Y is "down".
@@ -194,25 +203,19 @@ public abstract class EntityMixin implements ShipIntersectionCache {
 			self.setOnGround(true);
 			self.fallDistance = 0.0F;
 
-			// Keep VS2's EntityDragger tracking this entity. Stock VS2 records lastShipStoodOn in
-			// adjustEntityMovementForShipCollisions, which VS2EntityShipCollisionUtilsMixin cancels
-			// for ship-gravity entities - so without this refresh the entity is never carried along
-			// with the ship's motion, and a moving/rotating ship slides out from under (or into) it
-			// every tick (severe clipping on fast ships). The dragger's 25-tick grace period covers
-			// jumps and brief airtime between refreshes.
-			boolean dragged = VS2Helper.markStandingOnShip(self);
-
 			// Depenetration: velocity clamping alone never recovers the slow per-tick sinking into
 			// the deck (residual un-cancelled movement, or the ship shifting under an entity VS2 no
 			// longer drags). Once the feet pass the bottom of the deck layer, the probe above stops
 			// seeing the deck and gravity runs away. Measure how deep the feet are inside the deck
 			// (in ship space) and push back out along ship-up, capped per tick so the correction is
-			// smooth rather than a teleport.
+			// smooth rather than a teleport. The cap matches the probe depth: a fast-spinning ship
+			// can sink an entity faster than a smaller cap recovers, and anything deeper than the
+			// probe window is invisible to the support check anyway.
 			double penetration = VS2Helper.getShipDeckPenetration(self, 0.5D);
 			if (penetration > 1.0E-3D) {
 				Vec3 shipUp = VS2Helper.getShipUpInWorld(self);
 				if (shipUp != null) {
-					double correction = Math.min(penetration, 0.25D);
+					double correction = Math.min(penetration, 0.5D);
 					self.setPos(self.position().add(shipUp.scale(correction)));
 					if (ShipCollisionDebug.shouldLog(self) && self instanceof Player) {
 						ShipCollisionDebug.log("[groundstick] {} depenetrate {} (of {}) along shipUp={}",
