@@ -12,6 +12,7 @@ import net.memezforbeanz.gravityapi.util.RotationUtil;
 
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
@@ -169,5 +170,39 @@ public abstract class GravityChangerAPI {
     public static boolean canChangeGravity(Entity entity) {
         return EntityTags.canChangeGravity(entity);
     }
-    
+
+    /**
+     * The region of the entity a gravity field/plate must touch to claim it
+     * (AmethystGravity's detection collider). The raw bounding box is unusable for this:
+     * it is re-anchored at the feet on every cardinal gravity change, so at a field
+     * boundary the box swings out of the field the moment the field claims the entity
+     * and membership oscillates. This collider is a box spanning the entity's feet, one
+     * entity-width tall, oriented by the entity's CURRENT gravity frame — the feet stay
+     * fixed through 90° flips, so membership is stable through the transition.
+     * <p>
+     * When the effect pulls opposite to the current gravity ({@code effectWorldDir}
+     * within ~25° of straight "up", e.g. a ceiling plate overhead), the full hitbox is
+     * returned so head contact counts. On ships the physics hitbox stays world-aligned
+     * and the full box is the honest representation.
+     */
+    public static AABB getGravityEffectCollider(
+        Entity entity, @Nullable Vec3 effectWorldDir, boolean onShip
+    ) {
+        GravityCapabilityImpl comp = getGravityComponent(entity);
+        if (comp == null) {
+            return entity.getBoundingBox();
+        }
+        GravityDirection current = comp.getCurrentGravityDirection();
+        if (effectWorldDir != null && current.getVector().dot(effectWorldDir) < -0.9) {
+            return entity.getBoundingBox();
+        }
+        if (onShip) {
+            return entity.getBoundingBox();
+        }
+        double hw = entity.getBbWidth() / 2.0;
+        Vec3 p1 = current.vecPlayerToWorld(new Vec3(hw, 2.0 * hw, hw));
+        Vec3 p2 = current.vecPlayerToWorld(new Vec3(-hw, 0.0, -hw));
+        return new AABB(p1, p2).move(entity.position());
+    }
+
 }

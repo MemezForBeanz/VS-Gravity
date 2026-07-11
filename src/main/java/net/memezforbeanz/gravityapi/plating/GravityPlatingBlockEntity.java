@@ -326,29 +326,11 @@ public class GravityPlatingBlockEntity extends BlockEntity {
         }
     }
 
-    /**
-     * The region of the entity that a plate field must touch to claim it (AmethystGravity's
-     * detection collider): a box spanning the entity's feet, one entity-width tall, oriented
-     * by the entity's CURRENT gravity frame so it tracks the body through wall stands and
-     * rotation animations. When the plate pulls opposite to the current gravity (a ceiling
-     * plate overhead), the full hitbox is used so head contact counts.
-     */
+    /** See {@link GravityChangerAPI#getGravityEffectCollider} — shared with dependent mods' fields. */
     private static AABB getGravityEffectCollider(
         Entity entity, GravityCapabilityImpl comp, Vec3 effectWorldDir, boolean onShip
     ) {
-        GravityDirection current = comp.getCurrentGravityDirection();
-        if (current.getVector().dot(effectWorldDir) < -0.9) {
-            return entity.getBoundingBox();
-        }
-        if (onShip) {
-            // Ship gravity keeps the physics hitbox world-aligned; the whole box is the
-            // most honest representation of where the entity is
-            return entity.getBoundingBox();
-        }
-        double hw = entity.getBbWidth() / 2.0;
-        Vec3 p1 = current.vecPlayerToWorld(new Vec3(hw, 2.0 * hw, hw));
-        Vec3 p2 = current.vecPlayerToWorld(new Vec3(-hw, 0.0, -hw));
-        return new AABB(p1, p2).move(entity.position());
+        return GravityChangerAPI.getGravityEffectCollider(entity, effectWorldDir, onShip);
     }
     
     // when approaching an inward corner, do auto-jump to make it smoothly go forward
