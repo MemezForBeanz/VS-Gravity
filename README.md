@@ -50,7 +50,7 @@ Same `gpr.user` / `gpr.token` (or `GITHUB_ACTOR` / `GITHUB_TOKEN`) credentials a
 the consuming side to resolve the dependency — put them in that project's
 `~/.gradle/gradle.properties`, not its repo.
 
-### Option B: local maven (no GitHub auth needed, good for same-machine dev)
+### Option B: local maven 
 
 ```
 ./gradlew publishToMavenLocal
