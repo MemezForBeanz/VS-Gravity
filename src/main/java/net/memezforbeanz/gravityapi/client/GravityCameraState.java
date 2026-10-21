@@ -3,6 +3,7 @@ package net.memezforbeanz.gravityapi.client;
 import net.memezforbeanz.gravityapi.RotationAnimation;
 import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
 import net.memezforbeanz.gravityapi.api.GravityDirection;
+import net.memezforbeanz.gravityapi.compat.vs2.VS2Helper;
 import net.minecraft.world.entity.Entity;
 import org.joml.Quaternionf;
 
@@ -73,11 +74,13 @@ public class GravityCameraState {
             return smoothed;
         }
 
-        // Get the target rotation
         Quaternionf targetRotation = getTargetRotation(entity, gravityDirection, timeMs);
 
         Quaternionf smoothedRotation;
-        if (lastSmoothedRotation == null) {
+        if (lastSmoothedRotation == null || (gravityDirection.isShipAnchored() && !animating)) {
+            // Riding a ship: the target is already resolved per frame from the ship's render
+            // transform, so it's smooth by construction - filtering it would only make the view
+            // trail a spinning ship (the old 60 ms lag) and swim against the drawn hull.
             smoothedRotation = new Quaternionf(targetRotation);
         } else {
             // The RotationAnimation already provides the path for big flips; this filter
@@ -103,9 +106,6 @@ public class GravityCameraState {
         return 1.0f - (float) Math.exp(-dtMs / tauMs);
     }
     
-    /**
-     * Check if a quaternion is close enough to identity to be considered "no rotation"
-     */
     private static boolean isCloseToIdentity(Quaternionf q) {
         // Identity quaternion is (0, 0, 0, 1)
         float threshold = 0.01f;
@@ -115,18 +115,15 @@ public class GravityCameraState {
                Math.abs(q.w - 1.0f) < threshold;
     }
 
-    /**
-     * Get the target (un-smoothed) gravity rotation.
-     */
     private static Quaternionf getTargetRotation(Entity entity, GravityDirection gravityDirection, long timeMs) {
         RotationAnimation animation = GravityChangerAPI.getRotationAnimation(entity);
         
         if (animation != null && animation.isInAnimation()) {
-            // During animation, use the animation's interpolated rotation
             return animation.getCurrentGravityRotation(gravityDirection, timeMs);
         } else {
-            // No animation - use the gravity direction's quaternion directly
-            return gravityDirection.getWorldToPlayerRotation();
+            // No animation - use the gravity direction's quaternion directly (ship-anchored
+            // gravity resolved from the ship's interpolated render transform this frame)
+            return VS2Helper.renderWorldToPlayerRotation(gravityDirection);
         }
     }
     
@@ -139,9 +136,6 @@ public class GravityCameraState {
         lastUpdateTime = 0;
     }
     
-    /**
-     * Check if we have a cached rotation.
-     */
     public static boolean hasCachedRotation() {
         return lastSmoothedRotation != null;
     }

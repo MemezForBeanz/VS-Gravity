@@ -42,18 +42,15 @@ public class GravityGeneratorBlock extends AbstractGravityGeneratorBlock {
     @Override
     public InteractionResult use(BlockState state, Level level, BlockPos pos, Player player, InteractionHand hand, BlockHitResult hit) {
         if (!level.isClientSide()) {
-            // Toggle active state
             boolean isActive = state.getValue(ACTIVE);
             level.setBlock(pos, state.setValue(ACTIVE, !isActive), 3);
 
-            // Send feedback to player
             if (!isActive) {
                 player.displayClientMessage(Component.literal("Gravity Generator: §aActivated"), true);
             } else {
                 player.displayClientMessage(Component.literal("Gravity Generator: §cDeactivated"), true);
             }
 
-            // Check if on ship and inform player
             if (VS2Integration.isVS2Loaded()) {
                 BlockEntity be = level.getBlockEntity(pos);
                 if (be instanceof GravityGeneratorBlockEntity generator) {

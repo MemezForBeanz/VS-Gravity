@@ -28,15 +28,6 @@ public abstract class FireworkRocketMixin extends Entity {
         super(type, world);
     }
     
-    /*@Override
-    public Direction gravitychanger$getAppliedGravityDirection() {
-        Entity vehicle = this.getVehicle();
-        if(vehicle != null) {
-            return GravityChangerAPI.getGravityDirection(vehicle);
-        }
-
-        return GravityChangerAPI.getGravityDirection((FireworkRocketEntity)(Object)this);
-    }*/
     @ModifyVariable(
         method = "Lnet/minecraft/world/entity/projectile/FireworkRocketEntity;tick()V",
         at = @At(
@@ -50,22 +41,4 @@ public abstract class FireworkRocketMixin extends Entity {
         }
         return value;
     }
-    
-    // @ModifyVariable(
-    //         method = "tick",
-    //         at = @At(
-    //                 value = "INVOKE_ASSIGN",
-    //                 target = "Lnet/minecraft/entity/LivingEntity;getRotationVector()Lnet/minecraft/util/math/Vec3d;",
-    //                 ordinal = 0
-    //         )
-    // )
-    // private Vec3d modify_tick_Vec3d_0(Vec3d vec3d) {
-    //     assert this.shooter != null;
-    //     Direction gravityDirection = ((EntityAccessor) this.shooter).gravitychanger$getAppliedGravityDirection();
-    //     if(gravityDirection == Direction.DOWN) {
-    //         return vec3d;
-    //     }
-//
-    //     return RotationUtil.vecWorldToPlayer(vec3d, gravityDirection);
-    // }
 }

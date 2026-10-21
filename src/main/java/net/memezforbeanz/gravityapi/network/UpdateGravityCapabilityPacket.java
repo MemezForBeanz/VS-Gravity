@@ -64,7 +64,6 @@ public class UpdateGravityCapabilityPacket
 		this.currentGravityDirection = buf.readEnum(Direction.class);
 		this.baseGravityStrength = buf.readDouble();
 		this.currentGravityStrength = buf.readDouble();
-		// Read arbitrary gravity vector
 		boolean hasArbitrary = buf.readBoolean();
 		if (hasArbitrary) {
 			this.arbitraryGravityVector = new Vec3(buf.readDouble(), buf.readDouble(), buf.readDouble());
@@ -73,7 +72,6 @@ public class UpdateGravityCapabilityPacket
 			this.arbitraryGravityVector = null;
 			this.arbitraryIsCardinal = false;
 		}
-		// Read camera-only flag
 		this.isCameraOnly = buf.readBoolean();
 	}
 
@@ -85,7 +83,6 @@ public class UpdateGravityCapabilityPacket
 		buf.writeEnum(this.currentGravityDirection);
 		buf.writeDouble(this.baseGravityStrength);
 		buf.writeDouble(this.currentGravityStrength);
-		// Write arbitrary gravity vector
 		buf.writeBoolean(this.arbitraryGravityVector != null);
 		if (this.arbitraryGravityVector != null) {
 			buf.writeDouble(this.arbitraryGravityVector.x);
@@ -93,7 +90,6 @@ public class UpdateGravityCapabilityPacket
 			buf.writeDouble(this.arbitraryGravityVector.z);
 			buf.writeBoolean(this.arbitraryIsCardinal);
 		}
-		// Write camera-only flag
 		buf.writeBoolean(this.isCameraOnly);
 	}
 	
@@ -110,7 +106,6 @@ public class UpdateGravityCapabilityPacket
 						Entity entity = GCUtil.getEntityByUUID(level, message.entityUUID);
 						entity.getCapability(GravityCapabilities.GRAVITY).ifPresent(cap -> 
 						{
-							// Convert arbitrary vector to GravityDirection if present
 							GravityDirection arbitraryDir = null;
 							if (message.arbitraryGravityVector != null) {
 								arbitraryDir = message.arbitraryIsCardinal

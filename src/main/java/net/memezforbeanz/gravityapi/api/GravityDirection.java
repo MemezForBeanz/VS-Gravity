@@ -6,6 +6,9 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix3f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
+import org.jetbrains.annotations.Nullable;
+
+import java.lang.ref.WeakReference;
 
 /**
  * Represents a gravity direction that can be either a cardinal Direction
@@ -42,13 +45,20 @@ public class GravityDirection {
     private final boolean isCardinal;
     
     /**
-     * Cached rotation quaternion from DOWN to this gravity direction
+     * Ship anchor (transient, never serialized or synced): the VS2 ship this direction is
+     * fixed to and the direction in that ship's own frame. Ship-relative gravity rides the
+     * ship — physics re-resolves the world vector from the ship's current transform each
+     * tick and rendering from its interpolated render transform each frame, instead of
+     * chasing a world-space snapshot that lags a moving or spinning ship.
      */
+    @Nullable
+    private WeakReference<Object> anchorShip;
+    private long anchorShipId;
+    @Nullable
+    private Vec3 shipLocalVector;
+
     private Quaternionf rotationQuaternion;
     
-    /**
-     * Cached inverse rotation quaternion
-     */
     private Quaternionf inverseRotationQuaternion;
     
     /**
@@ -98,6 +108,54 @@ public class GravityDirection {
         return new GravityDirection(vector, true);
     }
     
+    /**
+     * A ship-relative direction anchored to a VS2 ship: {@code worldVector} is its current
+     * world-space form, {@code shipLocal} the same direction in the ship's frame.
+     */
+    public static GravityDirection shipAnchored(Vec3 worldVector, Object ship, long shipId, Vec3 shipLocal) {
+        GravityDirection direction = new GravityDirection(worldVector, true);
+        direction.anchorShip = new WeakReference<>(ship);
+        direction.anchorShipId = shipId;
+        direction.shipLocalVector = shipLocal.normalize();
+        return direction;
+    }
+
+    /** Whether this direction is fixed to a ship's frame (see {@link #shipAnchored}). */
+    public boolean isShipAnchored() {
+        return shipLocalVector != null;
+    }
+
+    /** The anchoring ship object, or null if unanchored or the ship was unloaded. */
+    @Nullable
+    public Object getAnchorShip() {
+        return anchorShip != null ? anchorShip.get() : null;
+    }
+
+    /** The direction in the anchoring ship's frame, or null if unanchored. */
+    @Nullable
+    public Vec3 getShipLocalVector() {
+        return shipLocalVector;
+    }
+
+    /** The same ship anchor with a freshly resolved world vector. */
+    public GravityDirection withWorldVector(Vec3 worldVector) {
+        Object ship = getAnchorShip();
+        if (shipLocalVector == null || ship == null) {
+            return shipRelative(worldVector);
+        }
+        return shipAnchored(worldVector, ship, anchorShipId, shipLocalVector);
+    }
+
+    /**
+     * Whether both directions point the same way in the same ship's frame — any difference
+     * between their world vectors is then purely the ship moving, not a gravity change.
+     */
+    public boolean isSameShipFrameAs(@Nullable GravityDirection other) {
+        return other != null && shipLocalVector != null && other.shipLocalVector != null
+                && anchorShipId == other.anchorShipId
+                && shipLocalVector.distanceToSqr(other.shipLocalVector) < 1.0E-6;
+    }
+
     /**
      * Create a GravityDirection from x, y, z components
      */
@@ -173,7 +231,6 @@ public class GravityDirection {
                 (float) axis.x, (float) axis.y, (float) axis.z, (float) angle
             );
             this.inverseRotationQuaternion = playerToWorld;
-            // worldToPlayer is the inverse
             this.rotationQuaternion = new Quaternionf(playerToWorld).conjugate();
         }
 
@@ -321,7 +378,6 @@ public class GravityDirection {
         double y = tag.getDouble("y");
         double z = tag.getDouble("z");
         
-        // Handle zero vector
         if (x == 0 && y == 0 && z == 0) {
             return DOWN;
         }
@@ -338,12 +394,10 @@ public class GravityDirection {
         if (progress <= 0) return from;
         if (progress >= 1) return to;
         
-        // Slerp the quaternions for smooth rotation
         Quaternionf fromQ = from.getWorldToPlayerRotation();
         Quaternionf toQ = to.getWorldToPlayerRotation();
         Quaternionf result = new Quaternionf().set(fromQ).slerp(toQ, progress);
         
-        // Convert back to a gravity vector
         Vector3f down = new Vector3f(0, -1, 0);
         Quaternionf inverseResult = new Quaternionf(result).conjugate();
         down.rotate(inverseResult);

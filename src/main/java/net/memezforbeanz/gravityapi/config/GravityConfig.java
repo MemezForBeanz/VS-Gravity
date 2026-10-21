@@ -24,6 +24,7 @@ public class GravityConfig
 	public static ForgeConfigSpec.BooleanValue smoothArbitraryGravity;
 	public static ForgeConfigSpec.DoubleValue maxTerrainStandAngle;
 	public static ForgeConfigSpec.IntValue effectLingerTicks;
+	public static ForgeConfigSpec.BooleanValue debugShipCollision;
 
     static 
     {
@@ -47,6 +48,7 @@ public class GravityConfig
     	GravityConfig.smoothArbitraryGravity = config.comment("enable smooth arbitrary gravity for VS ships (allows non-cardinal directions)").define("smoothArbitraryGravity", true);
     	GravityConfig.maxTerrainStandAngle = config.comment("maximum angle (in degrees) between arbitrary gravity and the world terrain's up direction at which entities can still stand on terrain without sliding. Beyond this the surface behaves like a too-steep slope.").defineInRange("maxTerrainStandAngle", 60.0, 0.0, 90.0);
     	GravityConfig.effectLingerTicks = config.comment("how many ticks a gravity effect (generator field, plate, anchor) is held after it stops being applied. Smooths flicker at field boundaries; 0 disables.").defineInRange("effectLingerTicks", 5, 0, 40);
+    	GravityConfig.debugShipCollision = config.comment("log every ship-gravity collision step for players to latest.log (tag VSGravityCollision). Diagnostics only: very verbose; can be toggled while the game runs.").define("debugShipCollision", false);
         config.pop();
     }
 }

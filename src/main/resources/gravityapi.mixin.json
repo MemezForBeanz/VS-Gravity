@@ -58,7 +58,9 @@
 		"item.BehaviorUtilsMixin",
 		"forge.MixinForgeHooks",
 		"compat.ACEntityMixin",
+		"compat.CosmosGravityProcedureMixin",
 		"compat.VS2EntityShipCollisionUtilsMixin",
+		"compat.VS2EntityDraggerMixin",
 		"MixinServerLevel"
 	],
 	"client": [

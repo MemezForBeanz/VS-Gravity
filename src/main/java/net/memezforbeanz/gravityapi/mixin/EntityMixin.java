@@ -196,6 +196,18 @@ public abstract class EntityMixin implements ShipIntersectionCache {
 		// deltaMovement is in the local (gravity) frame for arbitrary gravity: -Y is "down".
 		// Skip while moving upward (jumping) so we don't cancel jumps.
 		Vec3 dm = self.getDeltaMovement();
+		if (ShipCollisionDebug.shouldLog(self) && self instanceof Player) {
+			// One line per move: enough to tell drag/collision drift (penetration creeping up),
+			// probe dropouts (supported flickering) and velocity kicks (dMove jumps) apart
+			ShipCollisionDebug.log("[tick] {} t={} og={} supported={} pen={} dMove={} pos={} gravity={} anchored={} local={} strength={} override={} noGrav={} yaw={}",
+					self.level().isClientSide() ? "C" : "S", self.level().getGameTime(), self.onGround(),
+					VS2Helper.isSupportedByShipDeck(self, worldDown, 0.2D),
+					String.format("%.4f", VS2Helper.getShipDeckPenetration(self, 0.5D)), dm, self.position(), gravityDirection,
+					gravityDirection.isShipAnchored(), gravityDirection.getShipLocalVector(),
+					String.format("%.4f", GravityChangerAPI.getGravityStrength(self)),
+					GravityChangerAPI.isGravityStrengthOverridden(self), self.isNoGravity(),
+					String.format("%.2f", self.getYRot()));
+		}
 		if (dm.y <= 0.0D && VS2Helper.isSupportedByShipDeck(self, worldDown, 0.2D)) {
 			if (dm.y < 0.0D) {
 				self.setDeltaMovement(dm.x, 0.0D, dm.z);
@@ -212,8 +224,10 @@ public abstract class EntityMixin implements ShipIntersectionCache {
 			// can sink an entity faster than a smaller cap recovers, and anything deeper than the
 			// probe window is invisible to the support check anyway.
 			double penetration = VS2Helper.getShipDeckPenetration(self, 0.5D);
-			if (penetration > 1.0E-3D) {
-				Vec3 shipUp = VS2Helper.getShipUpInWorld(self);
+			if (penetration > 1.0E-6D) {
+				// The entity's up in the ship frame, not ship +Y: under the hull "out of
+				// the deck" is ship-down
+				Vec3 shipUp = VS2Helper.getShipLocalUpInWorld(self);
 				if (shipUp != null) {
 					double correction = Math.min(penetration, 0.5D);
 					self.setPos(self.position().add(shipUp.scale(correction)));
@@ -381,7 +395,6 @@ public abstract class EntityMixin implements ShipIntersectionCache {
             return world;
         }
 
-        // For cardinal gravity, use standard transformation
         Direction gravityDirection = GravityChangerAPI.getGravityDirection((Entity) (Object) this);
         if (gravityDirection == Direction.DOWN) {
             return vec3d;
@@ -542,12 +555,17 @@ public abstract class EntityMixin implements ShipIntersectionCache {
         Vec3 shipMove = ctx.shipMovement;
         AABB shipBox = ctx.shipBox;
         double stepUp = entity.maxUpStep();
+        // Step-up runs along the entity's local up in ship space (ship -Y under the hull,
+        // sideways on a wall); "horizontal" means perpendicular to it.
+        Direction.Axis upAxis = ctx.up.getAxis();
+        Vec3 upUnit = Vec3.atLowerCornerOf(ctx.up.getNormal());
+        Vec3 stepVector = upUnit.scale(stepUp);
 
         // One shape query covering the main sweep and all step probes (vanilla reuses a single
         // list the same way). Queried with a null entity so VS2 doesn't re-inject world-space
         // tilted shapes at shipyard coordinates.
         AABB queryBox = shipBox.expandTowards(shipMove.x, shipMove.y, shipMove.z)
-                .expandTowards(0.0D, stepUp, 0.0D)
+                .expandTowards(stepVector.x, stepVector.y, stepVector.z)
                 .inflate(1.0E-7D);
         List<VoxelShape> shapes = new ArrayList<>();
         for (VoxelShape shape : entity.level().getBlockCollisions(null, queryBox)) {
@@ -560,30 +578,89 @@ public abstract class EntityMixin implements ShipIntersectionCache {
             return ctx.shipDirToWorld(shipMove);
         }
 
+        // Resolve-then-sweep: Shapes.collide ignores any shape the box already overlaps, so if the
+        // feet start even a hair inside the deck, the gravity sweep passes straight through it and
+        // the entity drops a full gravity step into the ship (then gets shoved back out by the
+        // post-move depenetration: the "pushed around" jitter on moving ships, where drag/collision
+        // round-off produces such overlaps constantly). Lift the box clear first - VS2's own ship
+        // collision has the same tolerance (it sweeps from half a step up).
+        double lift = deckOverlapAlongUp(shipBox, shapes, upAxis, ctx.up.getAxisDirection().getStep(), stepUp * 0.5D);
+        Vec3 liftVector = Vec3.ZERO;
+        if (lift > 0.0D) {
+            liftVector = upUnit.scale(lift);
+            shipBox = shipBox.move(liftVector);
+        }
+
         Vec3 adjusted = shipMove.lengthSqr() == 0.0D ? shipMove : collideWithShapes(shipMove, shipBox, shapes);
-        boolean collidedX = shipMove.x != adjusted.x;
-        boolean collidedY = shipMove.y != adjusted.y;
-        boolean collidedZ = shipMove.z != adjusted.z;
-        boolean grounded = entity.onGround() || (collidedY && shipMove.y < 0.0D);
-        if (stepUp > 0.0D && grounded && (collidedX || collidedZ)) {
-            Vec3 stepped = collideWithShapes(new Vec3(shipMove.x, stepUp, shipMove.z), shipBox, shapes);
-            Vec3 upOnly = collideWithShapes(new Vec3(0.0D, stepUp, 0.0D),
-                    shipBox.expandTowards(shipMove.x, 0.0D, shipMove.z), shapes);
-            if (upOnly.y < stepUp) {
-                Vec3 horizontal = collideWithShapes(new Vec3(shipMove.x, 0.0D, shipMove.z),
-                        shipBox.move(upOnly), shapes).add(upOnly);
-                if (horizontal.horizontalDistanceSqr() > stepped.horizontalDistanceSqr()) {
+        double moveUp = shipMove.dot(upUnit);
+        Vec3 lateral = shipMove.subtract(upUnit.scale(moveUp));
+        boolean collidedUp = shipMove.get(upAxis) != adjusted.get(upAxis);
+        boolean collidedLateral = false;
+        for (Direction.Axis axis : Direction.Axis.values()) {
+            if (axis != upAxis && shipMove.get(axis) != adjusted.get(axis)) {
+                collidedLateral = true;
+            }
+        }
+        boolean grounded = entity.onGround() || (collidedUp && moveUp < 0.0D);
+        if (stepUp > 0.0D && grounded && collidedLateral) {
+            Vec3 stepped = collideWithShapes(lateral.add(stepVector), shipBox, shapes);
+            Vec3 upOnly = collideWithShapes(stepVector, shipBox.expandTowards(lateral.x, lateral.y, lateral.z), shapes);
+            if (upOnly.dot(upUnit) < stepUp) {
+                Vec3 horizontal = collideWithShapes(lateral, shipBox.move(upOnly), shapes).add(upOnly);
+                if (lateralDistanceSqr(horizontal, upUnit) > lateralDistanceSqr(stepped, upUnit)) {
                     stepped = horizontal;
                 }
             }
-            if (stepped.horizontalDistanceSqr() > adjusted.horizontalDistanceSqr()) {
-                adjusted = stepped.add(collideWithShapes(new Vec3(0.0D, -stepped.y + shipMove.y, 0.0D),
+            if (lateralDistanceSqr(stepped, upUnit) > lateralDistanceSqr(adjusted, upUnit)) {
+                adjusted = stepped.add(collideWithShapes(upUnit.scale(moveUp - stepped.dot(upUnit)),
                         shipBox.move(stepped), shapes));
             }
         }
 
-        Vec3 world = ctx.shipDirToWorld(adjusted);
+        Vec3 world = ctx.shipDirToWorld(adjusted.add(liftVector));
         return world != null ? world : worldMovement;
+    }
+
+    /**
+     * How far (along the entity's local up, in ship space) the box's base sits inside ship shapes
+     * beneath it, up to {@code maxLift}. Only boxes under the footprint whose up-facing surface is
+     * within the window count - walls (surface beyond the window) and shapes above the feet don't.
+     */
+    @Unique
+    private static double deckOverlapAlongUp(AABB box, List<VoxelShape> shapes, Direction.Axis upAxis,
+                                             int upSign, double maxLift) {
+        double feet = upSign > 0 ? box.min(upAxis) : box.max(upAxis);
+        double lift = 0.0D;
+        for (VoxelShape shape : shapes) {
+            for (AABB part : shape.toAabbs()) {
+                boolean footprintOverlap = true;
+                for (Direction.Axis axis : Direction.Axis.values()) {
+                    if (axis != upAxis && (part.max(axis) <= box.min(axis) + 1.0E-7D
+                            || part.min(axis) >= box.max(axis) - 1.0E-7D)) {
+                        footprintOverlap = false;
+                        break;
+                    }
+                }
+                if (!footprintOverlap) {
+                    continue;
+                }
+                double surface = upSign > 0 ? part.max(upAxis) : part.min(upAxis);
+                double base = upSign > 0 ? part.min(upAxis) : part.max(upAxis);
+                double height = (surface - feet) * upSign;
+                // Must be under the feet (base below them) and its surface just above them
+                if ((base - feet) * upSign < 0.0D && height > 1.0E-7D && height <= maxLift) {
+                    lift = Math.max(lift, height);
+                }
+            }
+        }
+        return lift;
+    }
+
+    /** Squared length of {@code v} perpendicular to the unit vector {@code up}. */
+    @Unique
+    private static double lateralDistanceSqr(Vec3 v, Vec3 up) {
+        double along = v.dot(up);
+        return v.lengthSqr() - along * along;
     }
 
     /**
@@ -821,7 +898,6 @@ public abstract class EntityMixin implements ShipIntersectionCache {
         )
     )
     private static Vec3 redirect_adjustMovementForCollisions_adjustMovementForCollisions_0(Vec3 movement, AABB entityBoundingBox, List<VoxelShape> collisions, Entity entity) {
-        // Check entity null FIRST to avoid NPE
         if (entity == null) {
             return collideWithShapes(movement, entityBoundingBox, collisions);
         }
@@ -862,7 +938,6 @@ public abstract class EntityMixin implements ShipIntersectionCache {
             return collideWithShapes(movement, entityBoundingBox, collisions);
         }
 
-        // Use cardinal direction for collision system
         Vec3 playerMovement = RotationUtil.vecWorldToPlayer(movement, gravityDirection);
         double playerMovementX = playerMovement.x;
         double playerMovementY = playerMovement.y;
@@ -951,7 +1026,6 @@ public abstract class EntityMixin implements ShipIntersectionCache {
         )
     )
     private AABB modify_isInsideWall_of_0(Vec3 vec3, double x, double y, double z, Operation<AABB> original) {
-        // Skip for arbitrary gravity (VS ships)
         if (GravityChangerAPI.isArbitraryGravity((Entity) (Object) this)) {
             return original.call(vec3, x, y, z);
         }
@@ -974,7 +1048,6 @@ public abstract class EntityMixin implements ShipIntersectionCache {
     private double redirect_getHorizontalFacing_getYaw_0(double rotation) {
         Entity this_ = (Entity) (Object) this;
         
-        // Skip for arbitrary gravity (VS ships)
         if (GravityChangerAPI.isArbitraryGravity(this_)) {
             return rotation;
         }
@@ -993,7 +1066,6 @@ public abstract class EntityMixin implements ShipIntersectionCache {
         cancellable = true
     )
     private void inject_spawnSprintingParticles(CallbackInfo ci) {
-        // Skip for arbitrary gravity (VS ships)
         if (GravityChangerAPI.isArbitraryGravity((Entity) (Object) this)) return;
 
         Direction gravityDirection = GravityChangerAPI.getGravityDirection((Entity) (Object) this);

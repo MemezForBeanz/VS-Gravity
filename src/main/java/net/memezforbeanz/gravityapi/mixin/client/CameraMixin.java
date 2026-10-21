@@ -100,7 +100,6 @@ public abstract class CameraMixin {
         if (this.entity != null) {
             GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(this.entity);
 
-            // Skip if gravity is exactly down
             if (gravityDirection.equals(GravityDirection.DOWN)) {
                 return;
             }
@@ -112,12 +111,10 @@ public abstract class CameraMixin {
             if (GravityCameraState.hasCachedRotation()) {
                 smoothedGravityRot = GravityCameraState.getLastSmoothedRotation();
             } else {
-                // Fallback - compute it now
                 long timeMs = this.entity.level().getGameTime() * 50;
                 smoothedGravityRot = GravityCameraState.getSmoothedGravityRotation(this.entity, timeMs);
             }
 
-            // Apply the rotation
             Quaternionf gravityRotation = new Quaternionf(smoothedGravityRot);
             gravityRotation.conjugate();
             gravityRotation.mul(this.rotation);

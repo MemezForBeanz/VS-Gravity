@@ -35,7 +35,10 @@ public final class ShipCollisionDebug {
      * a tick's collision sub-steps) once per {@link #LOG_INTERVAL_TICKS}.
      */
     public static boolean shouldLog(Entity entity) {
-        return ENABLED && entity != null && (entity.tickCount % LOG_INTERVAL_TICKS == 0);
+        if (entity == null || entity.tickCount % LOG_INTERVAL_TICKS != 0) {
+            return false;
+        }
+        return ENABLED || (entity instanceof Player && configEnabled());
     }
 
     /**
@@ -51,8 +54,20 @@ public final class ShipCollisionDebug {
         return VERBOSE && shouldLog(entity);
     }
 
+    /**
+     * The player-only {@code debugShipCollision} option, read live: in-game config screens
+     * change the value in memory without firing a reload event, so it can't be mirrored.
+     */
+    private static boolean configEnabled() {
+        try {
+            return net.memezforbeanz.gravityapi.config.GravityConfig.debugShipCollision.get();
+        } catch (IllegalStateException e) {
+            return false; // config not loaded yet
+        }
+    }
+
     public static void log(String format, Object... args) {
-        if (ENABLED) {
+        if (ENABLED || configEnabled()) {
             LOG.info(format, args);
         }
     }

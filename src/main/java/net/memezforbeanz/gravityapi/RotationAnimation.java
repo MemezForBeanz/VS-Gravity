@@ -210,7 +210,8 @@ public class RotationAnimation {
         update(timeMs);
 
         if (!inAnimation) {
-            return new Quaternionf(currentGravity.getWorldToPlayerRotation());
+            // Ship-anchored gravity follows the ship's render transform per frame
+            return net.memezforbeanz.gravityapi.compat.vs2.VS2Helper.renderWorldToPlayerRotation(currentGravity);
         }
 
         double delta = (double) (timeMs - startTimeMs) / (endTimeMs - startTimeMs);

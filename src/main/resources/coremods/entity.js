@@ -44,8 +44,6 @@ function initializeCoreMod() {
             		
 					// Should be LSTORE 6
 					var jumpStartTarget = jumpStartTargetPre.getNext();
-					//printInsnNode(jumpStartTargetPre);
-					//printInsnNode(jumpStartTarget); 
 					if (jumpStartTarget.getOpcode() != opcodes.LSTORE) {
 						asmapi.log("ERROR", "[JMTSUPERTRANS] MISSING START TARGET INSN");
             			return classNode;

@@ -98,7 +98,6 @@ public class ShipGravityAPI {
             shipGravity.setShipRelativeGravityDirection(shipRelativeDirection);
             shipGravity.setShipGravityEnabled(true);
             
-            // Apply immediately
             if (shipGravity instanceof ShipGravityCapabilityImpl impl) {
                 impl.applyShipRelativeGravity();
             }

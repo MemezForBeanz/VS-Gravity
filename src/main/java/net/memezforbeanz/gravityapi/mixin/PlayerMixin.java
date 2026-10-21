@@ -79,22 +79,6 @@ public abstract class PlayerMixin extends LivingEntity {
         rotate = RotationUtil.vecPlayerToWorld(rotate, GravityChangerAPI.getGravityDirectionVec(this));
         return original.call((double) x - rotate.x, (double) y - rotate.y + (1.0D - 0.1D), (double) z - rotate.z);
     }
-    //@Redirect(
-    //        method = "travel",
-    //        at = @At(
-    //                value = "NEW",
-    //                target = "Lnet/minecraft/util/math/BlockPos;<init>(DDD)V",
-    //                ordinal = 0
-    //        )
-    //)
-    //private BlockPos redirect_travel_new_0(double x, double y, double z) {
-    //    Direction gravityDirection = GravityChangerAPI.getGravityDirection((Entity)(Object)this);
-    //    if(gravityDirection == Direction.DOWN) {
-    //        return new BlockPos(x, y, z);
-    //    }
-//
-    //    return new BlockPos(this.getPos().add(RotationUtil.vecPlayerToWorld(0.0D, 1.0D - 0.1D, 0.0D, gravityDirection)));
-    //}
     
     @Redirect(
         method = "Lnet/minecraft/world/entity/player/Player;drop(Lnet/minecraft/world/item/ItemStack;ZZ)Lnet/minecraft/world/entity/item/ItemEntity;",
@@ -116,11 +100,7 @@ public abstract class PlayerMixin extends LivingEntity {
             .subtract(RotationUtil.vecPlayerToWorld(new Vec3(0.0D, 0.3D, 0.0D), gravityDirection));
 
         ItemEntity itemEntity = new ItemEntity(world, vec3d.x, vec3d.y, vec3d.z, stack);
-        
-//        // change the gravity of the thrown item
-//        GravityChangerAPI.setBaseGravityDirection(
-//            itemEntity, gravityDirection
-//        );
+
         // the item entity calculates position both on client and server separately
         // if gravity is not down, the client and server will desync (the reason is not yet known)
         // don't let item change gravity for now

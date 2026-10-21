@@ -1,7 +1,10 @@
 package net.memezforbeanz.gravityapi.compat.vs2;
 
 import net.memezforbeanz.gravityapi.util.ShipIntersectionCache;
+import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
+import net.memezforbeanz.gravityapi.api.GravityDirection;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -64,9 +67,6 @@ public class VS2Helper {
         return ctor.newInstance(x, y, z);
     }
 
-    /**
-     * Initialize reflection methods
-     */
     private static void init() {
         if (initAttempted) return;
         initAttempted = true;
@@ -271,6 +271,103 @@ public class VS2Helper {
         }
     }
 
+    /**
+     * Anchor a ship-relative gravity direction to the ship the entity is on: record the
+     * direction in that ship's frame so it can be re-resolved from later transforms.
+     *
+     * @param prevTick convert with the ship's previous-tick transform — for directions computed
+     *                 by a block entity last tick and only resolved now (plating candidates)
+     * @return the anchored direction, or {@code null} if the entity isn't on a readable ship
+     */
+    @Nullable
+    public static GravityDirection anchorToEntityShip(Entity entity, GravityDirection direction, boolean prevTick) {
+        Object ship = getShipEntityIsOn(entity);
+        if (ship == null) {
+            return null;
+        }
+        try {
+            Object transform = prevTick ? prevTickTransform(ship) : cachedMethod(ship.getClass(), "getTransform").invoke(ship);
+            if (transform == null) {
+                return null;
+            }
+            org.joml.Quaterniond shipToWorld = readShipToWorldRotation(transform);
+            if (shipToWorld == null) {
+                return null;
+            }
+            Vec3 world = direction.getVector();
+            org.joml.Vector3d local = shipToWorld.conjugate(new org.joml.Quaterniond())
+                    .transform(new org.joml.Vector3d(world.x, world.y, world.z));
+            long shipId = (Long) cachedMethod(ship.getClass(), "getId").invoke(ship);
+            return GravityDirection.shipAnchored(world, ship, shipId, new Vec3(local.x, local.y, local.z));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The world-space vector of a ship-anchored direction under its ship's current transform.
+     *
+     * @param render use the client ship's interpolated render transform (per-frame camera and
+     *               model rotation); falls back to the tick transform where there is none
+     * @return the world vector, or {@code null} if unanchored or the ship can't be read
+     */
+    @Nullable
+    public static Vec3 anchoredToWorld(GravityDirection direction, boolean render) {
+        Object ship = direction.getAnchorShip();
+        Vec3 local = direction.getShipLocalVector();
+        if (ship == null || local == null) {
+            return null;
+        }
+        try {
+            Object transform = null;
+            if (render) {
+                try {
+                    transform = cachedMethod(ship.getClass(), "getRenderTransform").invoke(ship);
+                } catch (NoSuchMethodException e) {
+                    // Server ships have no render transform
+                }
+            }
+            if (transform == null) {
+                transform = cachedMethod(ship.getClass(), "getTransform").invoke(ship);
+            }
+            if (transform == null) {
+                return null;
+            }
+            org.joml.Quaterniond shipToWorld = readShipToWorldRotation(transform);
+            if (shipToWorld == null) {
+                return null;
+            }
+            org.joml.Vector3d world = shipToWorld.transform(new org.joml.Vector3d(local.x, local.y, local.z));
+            return new Vec3(world.x, world.y, world.z);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * World-to-player rotation for rendering a gravity direction this frame: ship-anchored
+     * directions follow the ship's interpolated render transform, so the camera and model turn
+     * exactly with the ship as drawn rather than stepping at tick rate behind it.
+     */
+    public static org.joml.Quaternionf renderWorldToPlayerRotation(GravityDirection direction) {
+        if (direction.isShipAnchored()) {
+            Vec3 world = anchoredToWorld(direction, true);
+            if (world != null && world.lengthSqr() > 1.0E-9D) {
+                return GravityDirection.shipRelative(world).getWorldToPlayerRotation();
+            }
+        }
+        return direction.getWorldToPlayerRotation();
+    }
+
+    private static Object prevTickTransform(Object ship) throws Exception {
+        try {
+            return cachedMethod(ship.getClass(), "getPrevTickTransform").invoke(ship);
+        } catch (NoSuchMethodException e) {
+            // Older VS2 core API name
+            return cachedMethod(ship.getClass(), "getPrevTickShipTransform").invoke(ship);
+        }
+    }
+
     @Nullable
     private static org.joml.Quaterniond readShipToWorldRotation(Object transform) throws Exception {
         Object quaternion = cachedMethod(transform.getClass(), "getShipToWorldRotation").invoke(transform);
@@ -297,7 +394,6 @@ public class VS2Helper {
                 Method getRotationMethod = cachedMethod(transform.getClass(), "getShipToWorldRotation");
                 Object quaternion = getRotationMethod.invoke(transform);
 
-                // Extract x, y, z, w from the quaternion using reflection
                 Method xMethod = cachedMethod(quaternion.getClass(), "x");
                 Method yMethod = cachedMethod(quaternion.getClass(), "y");
                 Method zMethod = cachedMethod(quaternion.getClass(), "z");
@@ -327,15 +423,12 @@ public class VS2Helper {
         }
 
         try {
-            // Create a new Vector3d with the direction
             Class<?> vector3dClass = vector3dClass();
             Object vector = newVector3d(worldDir.x, worldDir.y, worldDir.z);
 
-            // Call transformDirection on the matrix
             Method transformMethod = cachedMethod(matrix.getClass(), "transformDirection", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            // Extract x, y, z from result
             Method xMethod = cachedMethod(result.getClass(), "x");
             Method yMethod = cachedMethod(result.getClass(), "y");
             Method zMethod = cachedMethod(result.getClass(), "z");
@@ -361,15 +454,12 @@ public class VS2Helper {
         }
 
         try {
-            // Create a new Vector3d with the direction
             Class<?> vector3dClass = vector3dClass();
             Object vector = newVector3d(shipDir.x, shipDir.y, shipDir.z);
 
-            // Call transformDirection on the matrix
             Method transformMethod = cachedMethod(matrix.getClass(), "transformDirection", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            // Extract x, y, z from result
             Method xMethod = cachedMethod(result.getClass(), "x");
             Method yMethod = cachedMethod(result.getClass(), "y");
             Method zMethod = cachedMethod(result.getClass(), "z");
@@ -403,15 +493,12 @@ public class VS2Helper {
         }
 
         try {
-            // Create a new Vector3d with the position
             Class<?> vector3dClass = vector3dClass();
             Object vector = newVector3d(worldPos.x, worldPos.y, worldPos.z);
 
-            // Call transformPosition on the matrix
             Method transformMethod = cachedMethod(matrix.getClass(), "transformPosition", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            // Extract x, y, z from result
             Method xMethod = cachedMethod(result.getClass(), "x");
             Method yMethod = cachedMethod(result.getClass(), "y");
             Method zMethod = cachedMethod(result.getClass(), "z");
@@ -437,15 +524,12 @@ public class VS2Helper {
         }
 
         try {
-            // Create a new Vector3d with the position
             Class<?> vector3dClass = vector3dClass();
             Object vector = newVector3d(shipPos.x, shipPos.y, shipPos.z);
 
-            // Call transformPosition on the matrix
             Method transformMethod = cachedMethod(matrix.getClass(), "transformPosition", vector3dClass);
             Object result = transformMethod.invoke(matrix, vector);
 
-            // Extract x, y, z from result
             Method xMethod = cachedMethod(result.getClass(), "x");
             Method yMethod = cachedMethod(result.getClass(), "y");
             Method zMethod = cachedMethod(result.getClass(), "z");
@@ -460,9 +544,6 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Get the ship-to-world transformation matrix
-     */
     @Nullable
     private static Object getShipToWorldMatrix(Entity entity) {
         Object ship = getShipEntityIsOn(entity);
@@ -479,9 +560,6 @@ public class VS2Helper {
         return null;
     }
 
-    /**
-     * Get the world-to-ship transformation matrix
-     */
     @Nullable
     private static Object getWorldToShipMatrix(Entity entity) {
         Object ship = getShipEntityIsOn(entity);
@@ -747,9 +825,6 @@ public class VS2Helper {
         return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
     }
 
-    /**
-     * Get the ship-to-world transformation matrix from a ship object
-     */
     @Nullable
     private static Object getShipToWorldMatrixFromShip(Object ship) {
         if (ship == null) {
@@ -775,9 +850,6 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Get the world-to-ship transformation matrix from a ship object
-     */
     @Nullable
     private static Object getWorldToShipMatrixFromShip(Object ship) {
         if (ship == null) {
@@ -794,17 +866,11 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Transform a position vector using a VS2 (org.joml.Matrix4dc) transform matrix.
-     */
     @Nullable
     private static Vec3 transformPosition(Object matrix, Vec3 pos) {
         return transform(matrix, pos, "transformPosition");
     }
 
-    /**
-     * Transform a direction vector using a VS2 (org.joml.Matrix4dc) transform matrix.
-     */
     @Nullable
     private static Vec3 transformDirection(Object matrix, Vec3 dir) {
         return transform(matrix, dir, "transformDirection");
@@ -868,7 +934,6 @@ public class VS2Helper {
             return null;
         }
 
-        // Feet-center of the entity's world bounding box.
         double feetX = (worldBox.minX + worldBox.maxX) * 0.5D;
         double feetY = worldBox.minY;
         double feetZ = (worldBox.minZ + worldBox.maxZ) * 0.5D;
@@ -890,15 +955,48 @@ public class VS2Helper {
         // Reconstruct an axis-aligned box in ship space from the entity's dimensions. We deliberately
         // do NOT rotate the world AABB (that would produce an inflated, oriented box); instead we
         // rebuild it around the ship-space feet position so it stays a tight, ship-aligned box.
+        // The box extends from the feet along the entity's LOCAL up (opposite its gravity), not
+        // ship +Y: an entity standing upside down under the hull has its body hanging toward
+        // ship -Y. Building it toward ship +Y put the whole box inside the hull, so the box top
+        // met the hull underside first and the feet stopped a full body-height below it.
+        Direction up = shipLocalUp(entity, worldToShip);
         double halfWidth = worldBox.getXsize() * 0.5D;
         double halfDepth = worldBox.getZsize() * 0.5D;
         double height = worldBox.getYsize();
-        AABB shipBox = new AABB(
-                shipFeet.x - halfWidth, shipFeet.y, shipFeet.z - halfDepth,
-                shipFeet.x + halfWidth, shipFeet.y + height, shipFeet.z + halfDepth
-        );
+        double feetAlongUp = shipFeet.get(up.getAxis());
+        double headAlongUp = feetAlongUp + height * up.getAxisDirection().getStep();
+        AABB shipBox = axisBox(shipFeet, up.getAxis(),
+                Math.min(feetAlongUp, headAlongUp), Math.max(feetAlongUp, headAlongUp), halfWidth, halfDepth);
 
-        return new ShipCollisionContext(shipBox, shipMovement, shipToWorld);
+        return new ShipCollisionContext(shipBox, shipMovement, shipToWorld, up);
+    }
+
+    /**
+     * The entity's local up (opposite its gravity) in ship space, snapped to the nearest ship
+     * axis. Ship-relative gravity from on-ship fields is (near) ship-axis-aligned, so the
+     * snapped axis is the one the entity stands along; {@link Direction#UP} if undeterminable.
+     */
+    private static Direction shipLocalUp(Entity entity, Object worldToShip) {
+        Vec3 gravity = GravityChangerAPI.getGravityDirectionVec(entity).getVector();
+        Vec3 shipGravity = transformDirection(worldToShip, gravity);
+        if (shipGravity == null || shipGravity.lengthSqr() < 1.0E-9D) {
+            return Direction.UP;
+        }
+        return Direction.getNearest(-shipGravity.x, -shipGravity.y, -shipGravity.z);
+    }
+
+    /**
+     * An axis-aligned box spanning {@code [axisMin, axisMax]} along {@code axis}, centered on
+     * {@code center} across the other two axes ({@code halfA} on the first of them in X/Y/Z
+     * order, {@code halfB} on the second).
+     */
+    private static AABB axisBox(Vec3 center, Direction.Axis axis, double axisMin, double axisMax,
+                                double halfA, double halfB) {
+        return switch (axis) {
+            case X -> new AABB(axisMin, center.y - halfA, center.z - halfB, axisMax, center.y + halfA, center.z + halfB);
+            case Y -> new AABB(center.x - halfA, axisMin, center.z - halfB, center.x + halfA, axisMax, center.z + halfB);
+            case Z -> new AABB(center.x - halfA, center.y - halfB, axisMin, center.x + halfA, center.y + halfB, axisMax);
+        };
     }
 
     /**
@@ -940,19 +1038,20 @@ public class VS2Helper {
         }
         shipDown = shipDown.normalize();
 
-        // A thin slab spanning the entity footprint, from just above the feet down by probeDistance
-        // along ship-down. A small upward margin (0.02) catches the case where the feet are resting
-        // exactly on the block surface.
+        // A thin slab spanning the entity footprint along the nearest ship axis to gravity, from
+        // just "above" the feet (local up) down by probeDistance. The small margin (0.02) catches
+        // the case where the feet are resting exactly on the block surface. Axis-based so it
+        // works for every orientation — standing on the deck, the hull underside or a wall.
+        Direction up = Direction.getNearest(-shipDown.x, -shipDown.y, -shipDown.z);
+        int upSign = up.getAxisDirection().getStep();
         double halfWidth = box.getXsize() * 0.5D;
         double halfDepth = box.getZsize() * 0.5D;
-        Vec3 probeEnd = shipFeet.add(shipDown.scale(probeDistance));
         double margin = 0.02D;
-        AABB slab = new AABB(
-                Math.min(shipFeet.x, probeEnd.x) - halfWidth, Math.min(shipFeet.y, probeEnd.y),
-                Math.min(shipFeet.z, probeEnd.z) - halfDepth,
-                Math.max(shipFeet.x, probeEnd.x) + halfWidth, Math.max(shipFeet.y, probeEnd.y) + margin,
-                Math.max(shipFeet.z, probeEnd.z) + halfDepth
-        );
+        double feetAlongUp = shipFeet.get(up.getAxis());
+        double nearEdge = feetAlongUp + margin * upSign;
+        double farEdge = feetAlongUp - probeDistance * upSign;
+        AABB slab = axisBox(shipFeet, up.getAxis(),
+                Math.min(nearEdge, farEdge), Math.max(nearEdge, farEdge), halfWidth, halfDepth);
 
         for (VoxelShape shape : entity.level().getBlockCollisions(null, slab)) {
             if (!shape.isEmpty()) {
@@ -999,28 +1098,60 @@ public class VS2Helper {
             return 0.0D;
         }
 
+        // Measured along the entity's local up in ship space: on the hull underside the deck
+        // surface the feet sink into faces ship -Y, on a wall it faces sideways.
+        Direction up = shipLocalUp(entity, worldToShip);
+        Direction.Axis axis = up.getAxis();
+        int upSign = up.getAxisDirection().getStep();
+        double feetAlongUp = shipFeet.get(axis);
+
         // Footprint shrunk slightly so blocks the entity is merely standing beside don't count.
         double halfWidth = Math.max(0.05D, box.getXsize() * 0.5D - 0.1D);
         double halfDepth = Math.max(0.05D, box.getZsize() * 0.5D - 0.1D);
-        AABB column = new AABB(
-                shipFeet.x - halfWidth, shipFeet.y, shipFeet.z - halfDepth,
-                shipFeet.x + halfWidth, shipFeet.y + maxDepth, shipFeet.z + halfDepth
-        );
+        double windowEnd = feetAlongUp + maxDepth * upSign;
+        AABB column = axisBox(shipFeet, axis,
+                Math.min(feetAlongUp, windowEnd), Math.max(feetAlongUp, windowEnd), halfWidth, halfDepth);
 
         double penetration = 0.0D;
         for (VoxelShape shape : entity.level().getBlockCollisions(null, column)) {
             if (shape.isEmpty()) {
                 continue;
             }
-            double top = shape.bounds().maxY;
-            // Ignore shapes that continue above the search window - those are walls, not the deck
+            // The shape's surface facing the entity's local up, as a height above the feet
+            AABB bounds = shape.bounds();
+            double surface = upSign > 0 ? bounds.max(axis) : bounds.min(axis);
+            double height = (surface - feetAlongUp) * upSign;
+            // Ignore shapes that continue past the search window - those are walls, not the deck
             // surface the feet have sunk into.
-            if (top > shipFeet.y + maxDepth + 1.0E-4D) {
+            if (height > maxDepth + 1.0E-4D) {
                 continue;
             }
-            penetration = Math.max(penetration, top - shipFeet.y);
+            penetration = Math.max(penetration, height);
         }
         return Math.min(Math.max(penetration, 0.0D), maxDepth);
+    }
+
+    /**
+     * The world-space direction of the entity's local up in the ship frame (the snapped ship
+     * axis depenetration pushes along), or {@code null} if not on a resolvable ship.
+     */
+    @Nullable
+    public static Vec3 getShipLocalUpInWorld(Entity entity) {
+        Object ship = getShipEntityIsOn(entity);
+        if (ship == null) {
+            return null;
+        }
+        Object worldToShip = getWorldToShipMatrixFromShip(ship);
+        Object shipToWorld = getShipToWorldMatrixFromShip(ship);
+        if (worldToShip == null || shipToWorld == null) {
+            return null;
+        }
+        Direction up = shipLocalUp(entity, worldToShip);
+        Vec3 worldUp = transformDirection(shipToWorld, Vec3.atLowerCornerOf(up.getNormal()));
+        if (worldUp == null || worldUp.lengthSqr() < 1.0E-9D) {
+            return null;
+        }
+        return worldUp.normalize();
     }
 
     // Reflection handles for VS2's entity-dragging bookkeeping, resolved lazily on first use.
@@ -1102,12 +1233,15 @@ public class VS2Helper {
     public static final class ShipCollisionContext {
         public final AABB shipBox;
         public final Vec3 shipMovement;
+        /** The entity's local up in ship space (ship axis nearest to opposite its gravity). */
+        public final Direction up;
         private final Object shipToWorldMatrix;
 
-        private ShipCollisionContext(AABB shipBox, Vec3 shipMovement, Object shipToWorldMatrix) {
+        private ShipCollisionContext(AABB shipBox, Vec3 shipMovement, Object shipToWorldMatrix, Direction up) {
             this.shipBox = shipBox;
             this.shipMovement = shipMovement;
             this.shipToWorldMatrix = shipToWorldMatrix;
+            this.up = up;
         }
 
         /**

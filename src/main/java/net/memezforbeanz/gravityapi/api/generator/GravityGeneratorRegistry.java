@@ -94,13 +94,11 @@ public class GravityGeneratorRegistry {
         GravityFieldResult bestResult = null;
         double closestDistanceSq = Double.MAX_VALUE;
 
-        // Collect stale entries for cleanup after iteration
         List<BlockPos> toRemove = new ArrayList<>();
 
         for (BlockPos generatorPos : generators) {
             BlockEntity blockEntity = level.getBlockEntity(generatorPos);
             if (!(blockEntity instanceof AbstractGravityGeneratorBlockEntity generator)) {
-                // Generator no longer exists, mark for cleanup
                 toRemove.add(generatorPos);
                 continue;
             }
@@ -109,7 +107,6 @@ public class GravityGeneratorRegistry {
                 continue;
             }
 
-            // Get the effective world position of the generator (ship-aware)
             Vec3 generatorWorldPos = generator.getEffectiveWorldPosition();
             if (generatorWorldPos == null) {
                 LOGGER.debug("[Registry] Could not get world position for generator at {}", generatorPos);
@@ -131,7 +128,6 @@ public class GravityGeneratorRegistry {
             }
         }
 
-        // Clean up stale entries
         for (BlockPos pos : toRemove) {
             generators.remove(pos);
         }

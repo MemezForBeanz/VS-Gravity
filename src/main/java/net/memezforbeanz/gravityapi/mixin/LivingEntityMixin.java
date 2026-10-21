@@ -561,7 +561,9 @@ public abstract class LivingEntityMixin extends Entity {
 //        return RotationUtil.vecWorldToPlayer(vec3d, gravityDirection);
 //    }
     
-    @ModifyConstant(method = "Lnet/minecraft/world/entity/LivingEntity;travel(Lnet/minecraft/world/phys/Vec3;)V", constant = @Constant(doubleValue = 0.08))
+    // Forge's travel sets d0 = 0.08 and then overwrites it with the ENTITY_GRAVITY attribute
+    // value (which carries slow falling), so scale that second store rather than the constant.
+    @ModifyVariable(method = "Lnet/minecraft/world/entity/LivingEntity;travel(Lnet/minecraft/world/phys/Vec3;)V", at = @At(value = "STORE", ordinal = 1), ordinal = 0)
     private double multiplyGravity(double constant) {
         // Gravity is always applied (scaled by the entity's gravity strength), even under arbitrary
         // (VS ship) gravity. Collision for ship gravity is now resolved in ship-local space (see

@@ -20,7 +20,6 @@ public class ACEntityMixin
 	private void inject_adjustMovementForCollisions(Vec3 vec3, CallbackInfoReturnable<Vec3> cir, CallbackInfo ci)
 	{
 		//TODO find which mixin is cause problem instead of cancel entirely
-		//net.memezforbeanz.gravityapi.mixin.EntityMixin;
 		ci.cancel();
 	}
 }

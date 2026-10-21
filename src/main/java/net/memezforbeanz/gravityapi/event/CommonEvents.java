@@ -21,7 +21,6 @@ public class CommonEvents
     @SubscribeEvent
     public static void onRegisterCommands(RegisterCommandsEvent event)
     {
-    	//GravityCommand.register(event.getDispatcher());
     }
     
 	@SubscribeEvent

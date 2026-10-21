@@ -23,7 +23,6 @@ public class ShipGravityCapabilities {
      * Attach the ship gravity capability to entities
      */
     public static void attachEntityCapability(AttachCapabilitiesEvent<Entity> event) {
-        // Only attach if VS2 is loaded
         if (!VS2Integration.isVS2Loaded()) {
             return;
         }

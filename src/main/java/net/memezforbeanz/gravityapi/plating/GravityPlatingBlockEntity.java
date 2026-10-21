@@ -189,7 +189,6 @@ public class GravityPlatingBlockEntity extends BlockEntity {
         Level world = getLevel();
         
         if (world == null) {
-            //LOGGER.error("Refreshing cache when world is null {}", this);
             return;
         }
         
@@ -380,10 +379,6 @@ public class GravityPlatingBlockEntity extends BlockEntity {
                         entity,
                         GravityChangerAPI.getWorldVelocity(entity).add(deltaWorldVelocity)
                     );
-                    
-                    if (entity.level().isClientSide()) {
-                        //LOGGER.info("Client entity auto-jump on gravity plate corner {}", entity);
-                    }
                     return;
                 }
             }

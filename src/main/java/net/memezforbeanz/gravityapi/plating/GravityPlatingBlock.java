@@ -236,11 +236,8 @@ public class GravityPlatingBlock extends BaseEntityBlock {
     
     public static ArrayList<Direction> getDirections(BlockState blockState) {
         ArrayList<Direction> list = new ArrayList<>();
-        //Iterate directions
         for (int directionId = 0; directionId < 6; directionId++) {
-            //Convert ID to Direction
             Direction direction = Direction.from3DDataValue(directionId);
-            //If the plate has this direction
             if (hasDir(blockState, direction)) {
                 list.add(direction);
             }

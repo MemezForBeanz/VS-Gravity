@@ -76,6 +76,24 @@ public abstract class GravityChangerAPI {
         return getGravityComponent(entity).getCurrGravityStrength();
     }
     
+    /**
+     * Override the entity's gravity strength for the next tick (1.0 = overworld gravity),
+     * replacing planet gravity from Ad Astra / Cosmic Horizons. Re-apply every tick, like
+     * direction effects; the highest priority wins.
+     */
+    public static void applyGravityStrengthOverride(Entity entity, double strength, double priority) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        if (comp != null) {
+            comp.applyGravityStrengthOverride(strength, priority);
+        }
+    }
+
+    /** Whether a gravity strength override (e.g. a gravity generator's target gravity) holds. */
+    public static boolean isGravityStrengthOverridden(Entity entity) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        return comp != null && comp.isStrengthOverridden();
+    }
+
     public static double getBaseGravityStrength(Entity entity) {
         return getGravityComponent(entity).getBaseGravityStrength();
     }

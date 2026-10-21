@@ -71,7 +71,6 @@ public abstract class GameRendererMixin {
 
             long timeMs = focusedEntity.level().getGameTime() * 50 + (long) (p_109090_ * 50);
 
-            // Get the smoothed gravity rotation from shared state
             Quaternionf currentGravityRotation = GravityCameraState.getSmoothedGravityRotation(focusedEntity, timeMs);
 
 

@@ -348,7 +348,6 @@ public abstract class RotationUtil {
      * Properly handles quaternion rotation by rotating all 8 corners
      */
     public static AABB boxWorldToPlayer(AABB box, GravityDirection gravity) {
-        // For cardinal directions, use the simpler transform
         if (gravity.isCardinal()) {
             return boxWorldToPlayer(box, gravity.getNearestDirection());
         }
@@ -386,7 +385,6 @@ public abstract class RotationUtil {
      * Properly handles quaternion rotation by rotating all 8 corners
      */
     public static AABB boxPlayerToWorld(AABB box, GravityDirection gravity) {
-        // For cardinal directions, use the simpler transform
         if (gravity.isCardinal()) {
             return boxPlayerToWorld(box, gravity.getNearestDirection());
         }
@@ -435,7 +433,6 @@ public abstract class RotationUtil {
         Vec3 v1 = g1.getVector();
         Vec3 v2 = g2.getVector();
 
-        // Check for opposite vectors
         if (v1.add(v2).lengthSqr() < 0.0001) {
             return new Quaternionf().fromAxisAngleDeg(new Vector3f(0, 0, -1), 180.0f);
         }

@@ -95,7 +95,6 @@ public class ShipGravityCapabilityImpl implements IShipGravityCapability {
 
         Long currentShipId = VS2Integration.getShipMountedOn(entity);
         
-        // Handle auto-alignment when stepping onto a new ship
         if (autoAlignEnabled && currentShipId != null && !currentShipId.equals(lastShipId)) {
             // Player stepped onto a new ship - align gravity to ship's down direction
             shipId = currentShipId;
@@ -104,7 +103,6 @@ public class ShipGravityCapabilityImpl implements IShipGravityCapability {
             applyShipRelativeGravity();
         }
         
-        // Handle leaving a ship
         if (autoAlignEnabled && lastShipId != null && currentShipId == null) {
             // Player left the ship - reset to world gravity
             shipGravityEnabled = false;
@@ -114,7 +112,6 @@ public class ShipGravityCapabilityImpl implements IShipGravityCapability {
         
         lastShipId = currentShipId;
         
-        // Apply ship-relative gravity if enabled and on a ship
         if (shipGravityEnabled && shipId != null && currentShipId != null && currentShipId.equals(shipId)) {
             applyShipRelativeGravity();
         }
@@ -128,12 +125,10 @@ public class ShipGravityCapabilityImpl implements IShipGravityCapability {
             return;
         }
         
-        // Convert ship-relative gravity direction to world gravity direction
         Direction worldGravity = getWorldGravityFromShipRelative();
         if (worldGravity != null) {
             GravityCapabilityImpl gravityComponent = GravityChangerAPI.getGravityComponent(entity);
             
-            // Apply the gravity direction effect with high priority
             gravityComponent.applyGravityDirectionEffect(
                 worldGravity,
                 RotationParameters.getDefault(),
@@ -151,16 +146,13 @@ public class ShipGravityCapabilityImpl implements IShipGravityCapability {
             return shipRelativeGravityDirection;
         }
         
-        // Get the ship-relative direction as a vector
         Vec3 shipRelativeVec = Vec3.atLowerCornerOf(shipRelativeGravityDirection.getNormal());
         
-        // Transform to world space
         Vec3 worldVec = VS2Integration.shipToWorldDirection(entity, shipRelativeVec);
         if (worldVec == null) {
             return shipRelativeGravityDirection;
         }
         
-        // Find the closest Direction to this world vector
         return Direction.getNearest((float) worldVec.x, (float) worldVec.y, (float) worldVec.z);
     }
     

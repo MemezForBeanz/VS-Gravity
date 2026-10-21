@@ -43,14 +43,11 @@ public abstract class AbstractGravityGeneratorBlockEntity extends BlockEntity {
     /** Default priority for the gravity effect (higher = overrides other effects). */
     public static final double DEFAULT_GRAVITY_PRIORITY = 50.0;
 
-    /** Cached ship ID if this block is on a ship. */
     @Nullable
     private Long cachedShipId = null;
 
-    /** Whether we've checked for ship status this tick. */
     private boolean shipCheckDone = false;
 
-    /** Whether this generator is currently registered in the registry. */
     private boolean registered = false;
 
     /** Tick counter, usable by subclasses for throttled logic/logging. */
@@ -158,7 +155,6 @@ public abstract class AbstractGravityGeneratorBlockEntity extends BlockEntity {
             return null;
         }
         if (level != null && isOnShip()) {
-            // Transform the base direction from ship space into world space
             Vec3 worldDir = VS2Helper.shipToWorldDirectionFromBlock(level, getBlockPos(), base.getVector());
             if (worldDir != null) {
                 return GravityDirection.fromVector(worldDir);
@@ -240,7 +236,6 @@ public abstract class AbstractGravityGeneratorBlockEntity extends BlockEntity {
      * Ticked on both logical sides by {@link AbstractGravityGeneratorBlock}.
      */
     public void tick(Level level, BlockPos pos, BlockState state) {
-        // Reset ship check cache each tick
         shipCheckDone = false;
         tickCounter++;
 

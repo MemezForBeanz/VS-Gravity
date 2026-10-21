@@ -34,6 +34,14 @@ public class GravityMixinPlugin implements IMixinConfigPlugin
 		{
 			return false;
 		}
+		if(mixinClassName.equals("net.memezforbeanz.gravityapi.mixin.compat.CosmosGravityProcedureMixin") && LoadingModList.get().getModFileById("cosmos") == null)
+		{
+			return false;
+		}
+		if(mixinClassName.equals("net.memezforbeanz.gravityapi.mixin.compat.VS2EntityDraggerMixin") && LoadingModList.get().getModFileById("valkyrienskies") == null)
+		{
+			return false;
+		}
 		if(mixinClassName.equals("net.memezforbeanz.gravityapi.mixin.compat.VS2EntityShipCollisionUtilsMixin") && LoadingModList.get().getModFileById("valkyrienskies") == null)
 		{
 			return false;

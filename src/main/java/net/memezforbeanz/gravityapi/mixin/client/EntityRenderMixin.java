@@ -15,27 +15,6 @@ import net.minecraft.world.entity.Entity;
 
 @Mixin(EntityRenderer.class)
 public abstract class EntityRenderMixin {
-    //@Redirect(
-    //        method = "renderLabelIfPresent",
-    //        at = @At(
-    //                value = "INVOKE",
-    //                target = "Lnet/minecraft/client/render/entity/EntityRenderDispatcher;getRotation()Lnet/minecraft/util/math/Quaternion;",
-    //                ordinal = 0
-    //        )
-    //)
-    //private Quaternionf redirect_renderLabelIfPresent_getRotation_0(EntityRenderDispatcher entityRenderDispatcher, Entity entity, Text text, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light) {
-    //    Direction gravityDirection = GravityChangerAPI.getGravityDirection(entity);
-    //    if(gravityDirection == Direction.DOWN) {
-    //        return entityRenderDispatcher.getRotation();
-    //    }
-////
-    //    Quaternionf Quaternionf = RotationUtil.getCameraRotationQuaternion(gravityDirection).copy();
-    //    quaternion.conjugate();
-    //    quaternion.hamiltonProduct(entityRenderDispatcher.getRotation().copy());
-    //    return quaternion;
-    //}
-    
-    
     @ModifyExpressionValue(
         method = "renderNameTag",
         at = @At(
