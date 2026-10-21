@@ -1,0 +1,44 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # checkout turns annotated tags into lightweight ones; refetch to read the tag message
+      - name: Fetch tag
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Annotated tag message if there is one, otherwise the tagged commit's message
+      - name: Changelog
+        run: |
+          {
+            echo 'CHANGELOG<<__EOF__'
+            msg="$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")"
+            if [ -z "$msg" ]; then msg="$(git log -1 --format=%B)"; fi
+            echo "$msg"
+            echo '__EOF__'
+          } >> "$GITHUB_ENV"
+
+      - name: Publish
+        run: ./gradlew checkReleaseTag publish publishMods
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}

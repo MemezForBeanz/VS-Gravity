@@ -12,7 +12,7 @@ buildscript {
 
 plugins {
     id "org.jetbrains.kotlin.jvm" version "2.1.0" apply false
-    id 'com.matthewprenger.cursegradle' version '1.4.0' apply false
+    id 'me.modmuss50.mod-publish-plugin' version '2.2.1'
     id 'maven-publish'
     id 'net.minecraftforge.gradle' version '[6.0,6.2]'
 }
@@ -331,7 +331,7 @@ publishing {
         if (ghUser && ghToken) {
             maven {
                 name = 'GitHubPackages'
-                url = uri("https://maven.pkg.github.com/MemezForBeanz/VS-Gravity")
+                url = uri("https://maven.pkg.github.com/${github_repo}")
                 credentials {
                     username = ghUser
                     password = ghToken
@@ -347,6 +347,53 @@ tasks.withType(PublishToMavenRepository).configureEach {
 }
 tasks.withType(PublishToMavenLocal).configureEach {
     dependsOn 'reobfJarJar'
+}
+
+// CurseForge upload + GitHub Release, driven by the publish workflow on a v* tag.
+// Tokens come from the CURSEFORGE_TOKEN / GITHUB_TOKEN env vars; without CURSEFORGE_TOKEN the
+// whole thing runs as a dry run, so `./gradlew publishMods` is safe to try locally.
+publishMods {
+    file = tasks.named('jarJar', Jar).flatMap { it.archiveFile }
+    displayName = "${mod_name} ${mod_version}"
+    version = mod_version
+    changelog = providers.environmentVariable('CHANGELOG').orElse("https://github.com/${github_repo}/releases/tag/v${mod_version}")
+    type = STABLE
+    modLoaders.add('forge')
+    dryRun = providers.environmentVariable('CURSEFORGE_TOKEN').getOrNull() == null
+
+    curseforge {
+        projectId = curseforge_project_id
+        accessToken = providers.environmentVariable('CURSEFORGE_TOKEN')
+        minecraftVersions.add(minecraft_version)
+        javaVersions.add(JavaVersion.VERSION_17)
+        clientRequired = true
+        serverRequired = true
+        optional('valkyrien-skies')
+    }
+
+    github {
+        repository = github_repo
+        accessToken = providers.environmentVariable('GITHUB_TOKEN')
+        commitish = providers.environmentVariable('GITHUB_SHA').orElse('main')
+        tagName = "v${mod_version}"
+        additionalFiles.from(tasks.named('sourcesJar', Jar).flatMap { it.archiveFile })
+    }
+}
+
+// Each upload task must see the reobfuscated jar, not just the aggregate publishMods task
+tasks.matching { it.name in ['publishCurseforge', 'publishGithub'] }.configureEach {
+    dependsOn 'reobfJarJar'
+}
+
+// Fails the release if the pushed tag doesn't match mod_version in gradle.properties
+tasks.register('checkReleaseTag') {
+    def tag = providers.environmentVariable('GITHUB_REF_NAME')
+    def expected = "v${mod_version}"
+    doLast {
+        if (tag.getOrNull() != expected) {
+            throw new GradleException("Tag '${tag.getOrNull()}' does not match mod_version (expected '${expected}')")
+        }
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {

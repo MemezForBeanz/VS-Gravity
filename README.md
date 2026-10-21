@@ -14,15 +14,6 @@ GitHub requires authentication to *read* packages even on a public repo, so you 
 [personal access token](https://github.com/settings/tokens) with the `read:packages` scope
 (classic PAT; fine-grained tokens need packages read permission for this repo).
 
-To publish a new version (maintainers only), you additionally need `write:packages`, then:
-
-```
-./gradlew publish
-```
-
-(credentials come from `~/.gradle/gradle.properties` — `gpr.user` / `gpr.token` — or the
-`GITHUB_ACTOR` / `GITHUB_TOKEN` env vars; never commit a token to this repo)
-
 In the **consuming** mod's `build.gradle`:
 
 ```groovy
@@ -121,3 +112,27 @@ implementation of these classes.
 
 VS2 integration is reflection-based: none of this requires Valkyrien Skies to be installed —
 without it, generators simply work in world space.
+
+## Releasing (maintainers)
+
+Releases are published by the `Publish` GitHub Action when a `v*` tag is pushed. It uploads to
+GitHub Packages, CurseForge, and creates a GitHub Release with the jar + sources jar.
+
+1. Bump `mod_version` in `gradle.properties` and commit.
+2. Tag and push — the tag must equal `v<mod_version>` or the build fails. The annotated tag
+   message becomes the changelog (falls back to the commit message):
+
+   ```
+   git tag -a v1.0.28 -m "What changed"
+   git push origin main v1.0.28
+   ```
+
+One-time setup: set `curseforge_project_id` in `gradle.properties`, and add a `CURSEFORGE_TOKEN`
+repository secret (token from https://legacy.curseforge.com/account/api-tokens). Without that
+secret the CurseForge/GitHub Release step runs as a dry run.
+
+To check the CurseForge/GitHub Release config locally without uploading, run
+`./gradlew publishMods` with no `CURSEFORGE_TOKEN` set (dry run, files land in
+`build/publishMods/`). To publish to GitHub Packages by hand, run `./gradlew publish` with
+`gpr.user` / `gpr.token` (a token with `write:packages`) in `~/.gradle/gradle.properties`;
+never commit a token to this repo.
