@@ -4,20 +4,35 @@ on:
   push:
     tags:
       - 'v*'
+  # Re-run part of a release by hand, e.g. tasks=publishCurseforge for an existing tag
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (e.g. v1.0.27)
+        required: true
+      tasks:
+        description: Gradle tasks to run
+        required: true
+        default: publishCurseforge
 
 permissions:
   contents: write
   packages: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       # checkout turns annotated tags into lightweight ones; refetch to read the tag message
       - name: Fetch tag
-        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+        run: git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
 
       - uses: actions/setup-java@v4
         with:
@@ -31,14 +46,30 @@ jobs:
         run: |
           {
             echo 'CHANGELOG<<__EOF__'
-            msg="$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")"
+            msg="$(git tag -l --format='%(contents)' "${RELEASE_TAG}")"
             if [ -z "$msg" ]; then msg="$(git log -1 --format=%B)"; fi
             echo "$msg"
             echo '__EOF__'
           } >> "$GITHUB_ENV"
 
-      - name: Publish
-        run: ./gradlew checkReleaseTag publish publishMods
+      - name: CurseForge + GitHub Release
+        if: github.event_name == 'push'
+        run: ./gradlew checkReleaseTag publishMods
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+
+      # Separate step so an already-published version (409) can't block the uploads above
+      - name: GitHub Packages
+        if: github.event_name == 'push' && !cancelled()
+        run: ./gradlew publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Manual tasks
+        if: github.event_name == 'workflow_dispatch'
+        run: ./gradlew $TASKS
+        env:
+          TASKS: ${{ inputs.tasks }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
