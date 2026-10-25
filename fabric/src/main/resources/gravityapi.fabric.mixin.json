@@ -1,0 +1,18 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.memezforbeanz.gravityapi.fabric.mixin",
+  "plugin": "net.memezforbeanz.gravityapi.GravityMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "LivingEntityBreatheMixin"
+  ],
+  "client": [
+    "client.ScreenEffectRendererMixin",
+    "client.RotationBlockRenderMixin",
+    "client.IndigoTerrainContextMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

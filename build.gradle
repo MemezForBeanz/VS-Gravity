@@ -1,388 +1,102 @@
-buildscript {
+plugins {
+    id 'dev.architectury.loom' version '1.17-SNAPSHOT' apply false
+    id 'architectury-plugin' version '3.5-SNAPSHOT'
+    id 'com.gradleup.shadow' version '9.6.1' apply false
+    id 'me.modmuss50.mod-publish-plugin' version '2.2.1' apply false
+}
+
+architectury {
+    minecraft = project.minecraft_version
+}
+
+allprojects {
+    group = rootProject.mod_group_id
+    version = rootProject.mod_version
+}
+
+subprojects {
+    apply plugin: 'dev.architectury.loom'
+    apply plugin: 'architectury-plugin'
+    apply plugin: 'maven-publish'
+
+    // Forge keeps the historical "gravityapi" artifact name so existing dependents resolve it;
+    // the other modules are suffixed (gravityapi-common, gravityapi-fabric).
+    base {
+        archivesName = project.name == 'forge' ? rootProject.mod_id : "$rootProject.mod_id-$project.name"
+    }
+
     repositories {
-        maven { url = 'https://maven.minecraftforge.net' }
-        maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
+        maven { url = "https://maven.bawnorton.com/releases" } // MixinSquared
+        maven { url = "https://jitpack.io" }
+        maven { url = "https://maven.valkyrienskies.org/" } // Valkyrien Skies 2 + VS core
+        maven { url = "https://thedarkcolour.github.io/KotlinForForge/" } // Kotlin for Forge (VS2 runtime)
+        maven { url = "https://raw.githubusercontent.com/Fuzss/modresources/main/maven" } // Forge Config API Port
+        maven {
+            url = "https://api.modrinth.com/maven"
+            content { includeGroup "maven.modrinth" }
+        }
         mavenCentral()
     }
+
     dependencies {
-        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '[6.0,6.2)', changing: true
-        classpath 'org.spongepowered:mixingradle:0.7-SNAPSHOT'
+        minecraft "net.minecraft:minecraft:$rootProject.minecraft_version"
+        mappings loom.officialMojangMappings()
     }
-}
 
-plugins {
-    id "org.jetbrains.kotlin.jvm" version "2.1.0" apply false
-    id 'me.modmuss50.mod-publish-plugin' version '2.2.1'
-    id 'maven-publish'
-    id 'net.minecraftforge.gradle' version '[6.0,6.2]'
-}
-
-apply plugin: 'org.spongepowered.mixin'
-apply plugin: 'java'
-apply plugin: 'net.minecraftforge.gradle'
-apply plugin: 'eclipse'
-apply plugin: 'maven-publish'
-
-version = mod_version
-group = mod_group_id
-
-base {
-    archivesName = mod_id
-}
-
-mixin {
-    add sourceSets.main, "gravityapi.refmap.json"
-
-    config "gravityapi.mixin.json"
-}
-
-// Enable Forge Jar-in-Jar: nests our runtime deps (mixinextras/mixinsquared) inside the jar,
-// and lets other mods nest this library inside theirs the same way.
-jarJar.enable()
-
-sourceSets {
-    asm {
-        java {
-            srcDirs = ['src/asm']
+    configurations.all {
+        resolutionStrategy {
+            force "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+            force "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
         }
-        resources {
-            srcDirs = ['src/asm/resources']
-        }
-        compileClasspath += sourceSets.main.output + configurations.compileClasspath
-        runtimeClasspath += output + compileClasspath
-    }
-}
-
-tasks.register('allJar', Jar) {
-    archiveBaseName.set("${mod_id}-all")
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE  // <--- add this line
-    from(sourceSets.main.output)
-	from({
-	    zipTree(tasks.jarJar.archiveFile)
-	})
-}
-
-def allJarProvider = tasks.named('allJar', Jar)
-
-tasks.named('allJar', Jar).configure {
-	finalizedBy 'reobfAllJar'
-}
-
-tasks.register('asmJar', Jar) {
-    archiveBaseName.set("${mod_id}-asm")
-
-    from(sourceSets.asm.output)
-
-    from({ 
-        file("build/reobfAllJar/output.jar")
-    }) {
-        into('')
-        rename { "gravityapi-forge.jar" }
     }
 
-    manifest {
-        attributes(
-            'Specification-Title'    : mod_id,
-            'Specification-Version'  : project.version,
-            'Implementation-Vendor'  : mod_authors
-        )
+    java {
+        // A library for any 1.20.1 pack, so it targets Java 17 even though Gradle runs on 21
+        withSourcesJar()
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
-}
 
-tasks.asmJar {
-    dependsOn(tasks.allJar, tasks.compileAsmJava)
-}
+    tasks.withType(JavaCompile).configureEach {
+        it.options.release = 17
+        it.options.encoding = 'UTF-8'
+    }
 
-reobf {
-    allJar {}
-    asmJar {}
-    // Reobfuscate the jarJar output so the published artifact runs in production
-    jarJar {}
-}
-
-// The jarJar output (with nested deps) is the real distributable, so it gets no classifier
-// and becomes the main published artifact; the plain jar is published as "slim".
-tasks.named('jar', Jar).configure {
-    archiveClassifier = 'slim'
-}
-
-tasks.named('jarJar').configure {
-    archiveClassifier = ''
-    finalizedBy 'reobfJarJar'
-}
-
-java {
-    toolchain.languageVersion = JavaLanguageVersion.of(17)
-    // Publish a sources jar so dependents get javadoc/sources for the API in their IDE
-    withSourcesJar()
-}
-
-println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
-minecraft {
-    mappings channel: mapping_channel, version: mapping_version
-
-    copyIdeResources = true
-
-    accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
-
-    runs {
-        configureEach {
-            workingDirectory project.file('run')
-
-            property 'forge.logging.markers', 'REGISTRIES'
-
-            property 'forge.logging.console.level', 'debug'
-
-            mods {
-                "${mod_id}" {
-                    source sourceSets.main
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                artifactId = base.archivesName.get()
+                from components.java
+                pom {
+                    name = rootProject.mod_name
+                    description = rootProject.mod_description
+                    licenses { license { name = rootProject.mod_license } }
                 }
             }
         }
-
-        client {
-            property 'forge.enabledGameTestNamespaces', mod_id
-        }
-
-        server {
-            property 'forge.enabledGameTestNamespaces', mod_id
-            args '--nogui'
-        }
-
-        gameTestServer {
-            property 'forge.enabledGameTestNamespaces', mod_id
-        }
-
-        data {
-            workingDirectory project.file('run-data')
-
-            args '--mod', mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
-        }
-    }
-}
-
-sourceSets.main.resources { srcDir 'src/generated/resources' }
-
-repositories {
-    mavenCentral()
-
-    maven { url = "https://maven.bawnorton.com/releases" }
-    maven { url = "https://jitpack.io" }
-    maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
-
-    // Valkyrien Skies
-    maven {
-        name = "Valkyrien Skies"
-        url = "https://maven.valkyrienskies.org"
-    }
-
-    // Modrinth - provides some VS transitive deps (e.g. spark) that ForgeGradle's deobf step
-    // resolves the full graph for, even though this mod doesn't use them directly.
-    maven {
-        name = "Modrinth"
-        url = "https://api.modrinth.com/maven"
-        content {
-            includeGroup "maven.modrinth"
-        }
-    }
-
-    // Kotlin for Forge
-    maven {
-        name = 'Kotlin for Forge'
-        url = 'https://thedarkcolour.github.io/KotlinForForge/'
-        content {
-            includeGroup "thedarkcolour"
-        }
-    }
-}
-
-dependencies {
-    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
-
-    // Kotlin for Forge (required by Valkyrien Skies)
-    implementation 'thedarkcolour:kotlinforforge:4.12.0'
-
-    // Valkyrien Skies - Optional soft dependency (uses reflection at runtime)
-    implementation(fg.deobf("org.valkyrienskies:valkyrienskies-120-forge:${vs2_version}")) {
-        exclude group: 'com.simibubi', module: ''
-        exclude group: 'dev.engine-room', module: ''
-        exclude group: 'com.jozufozu', module: ''
-        // spark (a profiler mod) is a new transitive dep of VS 2.4.13. It is resolved from the
-        // Modrinth maven (added to repositories below) so ForgeGradle's deobf step can remap the
-        // VS graph, but excluded here since this reflection-only VS integration never references it.
-        exclude group: 'maven.modrinth', module: 'spark'
-    }
-    implementation("org.valkyrienskies.core:api:${vscore_version}") {
-        exclude group: 'org.joml', module: ''
-    }
-    implementation("org.valkyrienskies.core:internal:${vscore_version}") {
-        exclude group: 'org.joml', module: ''
-    }
-    implementation("org.valkyrienskies.core:util:${vscore_version}") {
-        exclude group: 'org.joml', module: ''
-    }
-    // Ad Astra: compile-only for its public gravity events API (planet gravity compat,
-    // compat.planets.AdAstraCompat). Weak dependency — only touched when ad_astra is loaded.
-    compileOnly(fg.deobf("maven.modrinth:ad-astra:${adastra_version}")) { transitive = false }
-	compileOnly(annotationProcessor("com.github.bawnorton.mixinsquared:mixinsquared-common:0.3.7"))
-    implementation(jarJar("com.github.bawnorton.mixinsquared:mixinsquared-forge:0.3.7")) {
-        jarJar.ranged(it, "[0.3.7,)")
-    }
-	compileOnly(annotationProcessor("io.github.llamalad7:mixinextras-common:0.5.5"))
-    implementation(jarJar("io.github.llamalad7:mixinextras-forge:0.5.5")) {
-        jarJar.ranged(it, "[0.5.5,)")
-    }
-	annotationProcessor "org.spongepowered:mixin:0.8.7:processor"
-}
-
-tasks.named('processResources', ProcessResources).configure {
-    var replaceProperties = [
-            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
-            forge_version: forge_version, forge_version_range: forge_version_range,
-            loader_version_range: loader_version_range,
-            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
-            mod_authors: mod_authors, mod_description: mod_description,
-    ]
-    inputs.properties replaceProperties
-
-    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
-        expand replaceProperties + [project: project]
-    }
-}
-
-tasks.named('jar', Jar).configure {
-    manifest {
-        attributes([
-                'Specification-Title'     : mod_id,
-                'Specification-Vendor'    : mod_authors,
-                'Specification-Version'   : '1',
-                'Implementation-Title'    : project.name,
-                'Implementation-Version'  : project.jar.archiveVersion,
-                'Implementation-Vendor'   : mod_authors,
-                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
-        ])
-    }
-
-    finalizedBy 'reobfJar'
-}
-
-// Maven publishing.
-// Publishes the reobfuscated jarJar artifact (with nested runtime deps) plus a sources jar, so
-// other mods can depend on this library and nest it via their own Jar-in-Jar.
-//
-// Publish with:
-//   ./gradlew publishToMavenLocal              -> ~/.m2/repository (for local cross-project dev)
-//   ./gradlew publish                          -> ./mcmodsrepo (file repo) AND GitHub Packages
-//   ./gradlew publishMavenJavaPublicationToGitHubPackagesRepository -> just GitHub Packages
-//
-// GitHub Packages requires a token with the write:packages scope (read:packages to consume).
-// Supply it via ~/.gradle/gradle.properties (gpr.user / gpr.token) or the GITHUB_ACTOR /
-// GITHUB_TOKEN env vars (e.g. in a GitHub Actions workflow) -- never commit it to this repo.
-//
-// Consume from another ForgeGradle project:
-//   repositories {
-//       maven {
-//           name = "GitHubPackages"
-//           url = uri("https://maven.pkg.github.com/MemezForBeanz/VS-Gravity")
-//           credentials {
-//               username = project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")
-//               password = project.findProperty("gpr.token") ?: System.getenv("GITHUB_TOKEN")
-//           }
-//       }
-//   }
-//   dependencies {
-//       implementation fg.deobf("net.memezforbeanz.gravityapi:gravityapi:${gravityapi_version}")
-//       jarJar(group: 'net.memezforbeanz.gravityapi', name: 'gravityapi', version: "[${gravityapi_version},)")
-//   }
-publishing {
-    publications {
-        register('mavenJava', MavenPublication) {
-            groupId = mod_group_id
-            artifactId = mod_id
-            version = mod_version
-
-            // Publishes the jarJar output as the main artifact and strips the nested
-            // dependencies from the generated pom (consumers get them via JiJ instead)
-            jarJar.component(it)
-
-            artifact sourcesJar
-
-            pom {
-                name = mod_name
-                description = mod_description
-                licenses {
-                    license {
-                        name = mod_license
+        repositories {
+            maven {
+                name = 'localOutput'
+                url "file://${rootProject.projectDir}/mcmodsrepo"
+            }
+            // Only registered when credentials are available, so a plain `./gradlew publish`
+            // without a GitHub token still succeeds (it just publishes to localOutput)
+            def ghUser = project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")
+            def ghToken = project.findProperty("gpr.token") ?: System.getenv("GITHUB_TOKEN")
+            if (ghUser && ghToken) {
+                maven {
+                    name = 'GitHubPackages'
+                    url = uri("https://maven.pkg.github.com/${rootProject.github_repo}")
+                    credentials {
+                        username = ghUser
+                        password = ghToken
                     }
                 }
             }
         }
     }
-    repositories {
-        maven {
-            name = 'localOutput'
-            url "file://${project.projectDir}/mcmodsrepo"
-        }
-        // Only registered when credentials are actually available, so a plain
-        // `./gradlew publish` on a machine without a GitHub token still succeeds
-        // (it just publishes to localOutput) instead of hard-failing task configuration.
-        def ghUser = project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")
-        def ghToken = project.findProperty("gpr.token") ?: System.getenv("GITHUB_TOKEN")
-        if (ghUser && ghToken) {
-            maven {
-                name = 'GitHubPackages'
-                url = uri("https://maven.pkg.github.com/${github_repo}")
-                credentials {
-                    username = ghUser
-                    password = ghToken
-                }
-            }
-        }
-    }
-}
-
-// The jarJar artifact is reobfuscated in place; make sure that happened before publishing
-tasks.withType(PublishToMavenRepository).configureEach {
-    dependsOn 'reobfJarJar'
-}
-tasks.withType(PublishToMavenLocal).configureEach {
-    dependsOn 'reobfJarJar'
-}
-
-// CurseForge upload + GitHub Release, driven by the publish workflow on a v* tag.
-// Tokens come from the CURSEFORGE_TOKEN / GITHUB_TOKEN env vars; without CURSEFORGE_TOKEN the
-// whole thing runs as a dry run, so `./gradlew publishMods` is safe to try locally.
-publishMods {
-    file = tasks.named('jarJar', Jar).flatMap { it.archiveFile }
-    displayName = "${mod_name} ${mod_version}"
-    version = mod_version
-    changelog = providers.environmentVariable('CHANGELOG').orElse("https://github.com/${github_repo}/releases/tag/v${mod_version}")
-    type = STABLE
-    modLoaders.add('forge')
-    dryRun = providers.environmentVariable('CURSEFORGE_TOKEN').getOrNull() == null
-
-    curseforge {
-        projectId = curseforge_project_id
-        accessToken = providers.environmentVariable('CURSEFORGE_TOKEN')
-        minecraftVersions.add(minecraft_version)
-        javaVersions.add(JavaVersion.VERSION_17)
-        clientRequired = true
-        serverRequired = true
-        optional('valkyrien-skies')
-    }
-
-    github {
-        repository = github_repo
-        accessToken = providers.environmentVariable('GITHUB_TOKEN')
-        commitish = providers.environmentVariable('GITHUB_SHA').orElse('main')
-        tagName = "v${mod_version}"
-        additionalFiles.from(tasks.named('sourcesJar', Jar).flatMap { it.archiveFile })
-    }
-}
-
-// Each upload task must see the reobfuscated jar, not just the aggregate publishMods task
-tasks.matching { it.name in ['publishCurseforge', 'publishGithub'] }.configureEach {
-    dependsOn 'reobfJarJar'
 }
 
 // Fails the release if the pushed tag doesn't match mod_version in gradle.properties
@@ -394,8 +108,4 @@ tasks.register('checkReleaseTag') {
             throw new GradleException("Tag '${tag.getOrNull()}' does not match mod_version (expected '${expected}')")
         }
     }
-}
-
-tasks.withType(JavaCompile).configureEach {
-    options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }

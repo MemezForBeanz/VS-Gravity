@@ -1,0 +1,48 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="gravityapi"
+version="${mod_version}"
+displayName="VS Gravity"
+credits="original mod by Gaider10, fork by qouteall"
+authors="min01"
+
+description='''A forge mod and api that lets you change player gravity direction'''
+
+[mods."lithium:options"]
+"mixin.entity.collisions.movement"=false
+
+[[dependencies.gravityapi]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+[[dependencies.gravityapi]]
+    modId="architectury"
+    mandatory=true
+    versionRange="[9.2.14,)"
+    ordering="AFTER"
+    side="BOTH"
+[[dependencies.gravityapi]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.21)"
+    ordering="NONE"
+    side="BOTH"
+# Weak planet-gravity compat: gravity strength overrides (e.g. a gravity generator's target
+# gravity) replace these mods' planet gravity. Optional; loaded after them when present.
+[[dependencies.gravityapi]]
+    modId="ad_astra"
+    mandatory=false
+    versionRange="[1.15,)"
+    ordering="AFTER"
+    side="BOTH"
+[[dependencies.gravityapi]]
+    modId="cosmos"
+    mandatory=false
+    versionRange="[0.0.7,)"
+    ordering="AFTER"
+    side="BOTH"

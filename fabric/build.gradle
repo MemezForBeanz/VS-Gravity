@@ -1,0 +1,70 @@
+plugins {
+    id 'com.gradleup.shadow'
+}
+
+architectury {
+    platformSetupLoomIde()
+    fabric()
+}
+
+configurations {
+    common {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+    compileClasspath.extendsFrom common
+    runtimeClasspath.extendsFrom common
+    developmentFabric.extendsFrom common
+
+    // Files in this configuration are bundled into the mod jar by Shadow
+    shadowBundle {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+}
+
+dependencies {
+    modImplementation "net.fabricmc:fabric-loader:$fabric_loader_version"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:$fabric_api_version"
+    modImplementation "dev.architectury:architectury-fabric:$architectury_api_version"
+
+    modApi "fuzs.forgeconfigapiport:forgeconfigapiport-fabric:$forgeconfigapiport_version"
+
+    common(project(path: ':common', configuration: 'namedElements')) { transitive false }
+    shadowBundle project(path: ':common', configuration: 'transformProductionFabric')
+
+    compileOnly(annotationProcessor("com.github.bawnorton.mixinsquared:mixinsquared-common:0.3.7"))
+    implementation(include("com.github.bawnorton.mixinsquared:mixinsquared-fabric:0.3.7"))
+    // Fabric Loader ships MixinExtras itself
+    compileOnly(annotationProcessor("io.github.llamalad7:mixinextras-common:0.5.5"))
+
+    // Valkyrien Skies: optional at runtime
+    modCompileOnly("org.valkyrienskies:valkyrienskies-120-fabric:$vs2_version") {
+        exclude group: "org.valkyrienskies.core"
+    }
+    ["api", "internal", "util"].each {
+        compileOnly("org.valkyrienskies.core:$it:$vscore_version") { exclude group: "org.joml" }
+    }
+}
+
+processResources {
+    var replaceProperties = [
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_description: mod_description, fabric_loader_version: fabric_loader_version,
+            minecraft_version: minecraft_version,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching('fabric.mod.json') {
+        expand replaceProperties
+    }
+}
+
+shadowJar {
+    configurations = [project.configurations.shadowBundle]
+    archiveClassifier = 'dev-shadow'
+}
+
+remapJar {
+    inputFile.set shadowJar.archiveFile
+}

@@ -1,0 +1,24 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.memezforbeanz.gravityapi.forge.mixin",
+  "plugin": "net.memezforbeanz.gravityapi.GravityMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "MixinForgeHooks",
+    "compat.ACEntityMixin",
+    "compat.CosmosGravityProcedureMixin",
+    "compat.MutantEndermanMixin",
+    "rotation.RotationSnapshotMixin"
+  ],
+  "client": [
+    "client.ScreenEffectRendererMixin",
+    "client.RotationBlockRenderMixin",
+    "client.EmbeddiumContextMixin",
+    "client.EmbeddiumWorldSliceMixin",
+    "client.EmbeddiumOcclusionMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

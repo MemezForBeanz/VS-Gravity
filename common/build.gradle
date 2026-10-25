@@ -1,0 +1,26 @@
+architectury {
+    common enabled_platforms.split(',')
+}
+
+dependencies {
+    // Only for Fabric's @Environment annotations, remapped per platform. Use no other Fabric Loader classes.
+    modImplementation "net.fabricmc:fabric-loader:$fabric_loader_version"
+    modImplementation "dev.architectury:architectury:$architectury_api_version"
+
+    // Configs use ForgeConfigSpec; Forge Config API Port provides it under the same names on Fabric
+    modCompileOnly "fuzs.forgeconfigapiport:forgeconfigapiport-fabric:$forgeconfigapiport_version"
+
+    compileOnly(annotationProcessor("io.github.llamalad7:mixinextras-common:0.5.5"))
+    compileOnly(annotationProcessor("com.github.bawnorton.mixinsquared:mixinsquared-common:0.3.7"))
+
+    // Valkyrien Skies: its common module plus the platform-agnostic VS core
+    modCompileOnly("org.valkyrienskies:valkyrienskies-120-common:$vs2_version") { transitive = false }
+    ["api", "internal", "util"].each {
+        compileOnly("org.valkyrienskies.core:$it:$vscore_version") { exclude group: "org.joml" }
+    }
+
+    // Ad Astra is multiloader; compile-only for its gravity events API (compat.planets.AdAstraCompat)
+    modCompileOnly("maven.modrinth:ad-astra:$adastra_version") { transitive = false }
+}
+
+tasks.withType(JavaCompile).configureEach { options.compilerArgs += ['-Xmaxerrs', '5000'] }
