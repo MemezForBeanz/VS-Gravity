@@ -88,7 +88,7 @@ publishMods {
         javaVersions.add(JavaVersion.VERSION_17)
         clientRequired = true
         serverRequired = true
-        requires('fabric-api', 'architectury-api', 'forge-config-api-port-fabric')
+        requires('fabric-api', 'architectury-api', 'forge-config-api-port')
         optional('valkyrien-skies')
     }
 }
