@@ -1,5 +1,6 @@
 plugins {
     id 'com.gradleup.shadow'
+    id 'me.modmuss50.mod-publish-plugin'
 }
 
 architectury {
@@ -67,4 +68,27 @@ shadowJar {
 
 remapJar {
     inputFile.set shadowJar.archiveFile
+}
+
+// CurseForge upload (the GitHub Release is created by the Forge module and carries this jar too).
+// Without CURSEFORGE_TOKEN it runs as a dry run.
+publishMods {
+    file = remapJar.archiveFile
+    displayName = "${mod_name} ${mod_version} (Fabric)"
+    version = "${mod_version}-fabric"
+    changelog = providers.environmentVariable('CHANGELOG').orElse("https://github.com/${github_repo}/releases/tag/v${mod_version}")
+    type = BETA
+    modLoaders.add('fabric')
+    dryRun = providers.environmentVariable('CURSEFORGE_TOKEN').getOrNull() == null
+
+    curseforge {
+        projectId = curseforge_project_id
+        accessToken = providers.environmentVariable('CURSEFORGE_TOKEN')
+        minecraftVersions.add(minecraft_version)
+        javaVersions.add(JavaVersion.VERSION_17)
+        clientRequired = true
+        serverRequired = true
+        requires('fabric-api', 'architectury-api', 'forge-config-api-port-fabric')
+        optional('valkyrien-skies')
+    }
 }

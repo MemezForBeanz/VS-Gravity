@@ -109,8 +109,8 @@ jar {
 // Without CURSEFORGE_TOKEN the whole thing runs as a dry run, so `./gradlew publishMods` is safe locally.
 publishMods {
     file = remapJar.archiveFile
-    displayName = "${mod_name} ${mod_version}"
-    version = mod_version
+    displayName = "${mod_name} ${mod_version} (Forge)"
+    version = "${mod_version}-forge"
     changelog = providers.environmentVariable('CHANGELOG').orElse("https://github.com/${github_repo}/releases/tag/v${mod_version}")
     type = STABLE
     modLoaders.add('forge')
@@ -123,14 +123,18 @@ publishMods {
         javaVersions.add(JavaVersion.VERSION_17)
         clientRequired = true
         serverRequired = true
+        requires('architectury-api')
         optional('valkyrien-skies')
     }
 
+    // One GitHub Release for the version, carrying both loaders' jars
     github {
         repository = github_repo
         accessToken = providers.environmentVariable('GITHUB_TOKEN')
         commitish = providers.environmentVariable('GITHUB_SHA').orElse('main')
         tagName = "v${mod_version}"
+        displayName = "${mod_name} ${mod_version}"
+        additionalFiles.from(project(':fabric').tasks.named('remapJar').flatMap { it.archiveFile })
         additionalFiles.from(remapSourcesJar.archiveFile)
     }
 }
