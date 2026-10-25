@@ -6,35 +6,23 @@ import net.memezforbeanz.gravityapi.api.GravityDirection;
 import net.memezforbeanz.gravityapi.compat.vs2.VS2Helper;
 import net.minecraft.world.entity.Entity;
 import org.joml.Quaternionf;
+import net.minecraft.util.Mth;
 
-/**
- * Shared state for camera gravity rotation.
- * This ensures both GameRendererMixin and CameraMixin use the same smoothed rotation
- * to prevent camera fighting and jitter.
- */
+/** The smoothed camera gravity rotation, shared by GameRendererMixin and CameraMixin so they never disagree. */
 public class GravityCameraState {
     
     private static Quaternionf lastSmoothedRotation = null;
     private static GravityDirection lastGravityDirection = null;
     private static long lastUpdateTime = 0;
 
-    // Time constants for the exponential low-pass filter: the smoothed rotation closes
-    // ~63% of the gap to the target per tau. Time-based so the feel is identical at any
-    // framerate (per-frame slerp constants are snappy at 240fps and sluggish at 30fps).
+    // Low-pass time constants (the smoothed rotation closes ~63% of the gap per tau), framerate independent
     private static final float TRACK_TAU_MS = 60.0f;
     private static final float RETURN_TO_IDENTITY_TAU_MS = 150.0f;
 
     /** Above this frame gap (pause, freeze, world switch) snap instead of easing. */
     private static final long SNAP_DT_MS = 250;
     
-    /**
-     * Get the smoothed gravity rotation for rendering.
-     * This method should be called once per frame and the result cached.
-     * 
-     * @param entity The entity to get gravity for
-     * @param timeMs Current time in milliseconds
-     * @return The smoothed gravity rotation quaternion
-     */
+    /** The smoothed gravity rotation for rendering this frame (computed once per frame). */
     public static Quaternionf getSmoothedGravityRotation(Entity entity, long timeMs) {
         if (entity == null) {
             return new Quaternionf();
@@ -42,7 +30,6 @@ public class GravityCameraState {
         
         GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(entity);
 
-        // Check if this is a new frame (avoid multiple smoothing per frame)
         if (timeMs == lastUpdateTime && lastSmoothedRotation != null) {
             return new Quaternionf(lastSmoothedRotation);
         }
@@ -52,18 +39,16 @@ public class GravityCameraState {
         RotationAnimation animation = GravityChangerAPI.getRotationAnimation(entity);
         boolean animating = animation != null && animation.isInAnimation();
 
-        // If gravity is down and no rotation animation is running, ease back to identity.
-        // While an animation IS running (a plate/field flip targeting DOWN), fall through to
-        // the tracking path so the camera follows the same smootherstep sweep as the entity
-        // model - short-circuiting here yanked the view to identity on every return to DOWN.
-        if (gravityDirection.equals(GravityDirection.DOWN) && !animating) {
+        // Gravity down and no animation: ease back to identity. While an animation runs (a flip back
+        // to DOWN), track it instead so the camera follows the model's sweep
+        Quaternionf tilt = GravityChangerAPI.getVisualTilt(entity, partialTick(entity, timeMs));
+        if (gravityDirection.equals(GravityDirection.DOWN) && !animating && tilt == null) {
             if (lastSmoothedRotation == null) {
                 return new Quaternionf();
             }
             Quaternionf smoothed = new Quaternionf(lastSmoothedRotation)
                     .slerp(new Quaternionf(), smoothingAlpha(dtMs, RETURN_TO_IDENTITY_TAU_MS));
 
-            // Check if we're close enough to identity to reset completely
             if (isCloseToIdentity(smoothed)) {
                 reset();
                 return new Quaternionf();
@@ -75,16 +60,19 @@ public class GravityCameraState {
         }
 
         Quaternionf targetRotation = getTargetRotation(entity, gravityDirection, timeMs);
+        if (tilt != null) {
+            // Free-fall tilt: tilt^-1 * worldToPlayer
+            targetRotation = new Quaternionf(tilt).conjugate().mul(targetRotation);
+        }
 
         Quaternionf smoothedRotation;
-        if (lastSmoothedRotation == null || (gravityDirection.isShipAnchored() && !animating)) {
-            // Riding a ship: the target is already resolved per frame from the ship's render
-            // transform, so it's smooth by construction - filtering it would only make the view
-            // trail a spinning ship (the old 60 ms lag) and swim against the drawn hull.
+        if (lastSmoothedRotation == null
+                || (gravityDirection.isShipAnchored() && (!animating || animation.isShipRelative()))) {
+            // On a ship the target already follows the ship's render transform per frame; filtering
+            // would only make the view trail a spinning ship
             smoothedRotation = new Quaternionf(targetRotation);
         } else {
-            // The RotationAnimation already provides the path for big flips; this filter
-            // only irons out per-tick retargets and sync jitter on top of it
+            // The animation provides the path for big flips; the filter only irons out retargets and jitter
             smoothedRotation = new Quaternionf(lastSmoothedRotation)
                     .slerp(targetRotation, smoothingAlpha(dtMs, TRACK_TAU_MS));
         }
@@ -93,6 +81,11 @@ public class GravityCameraState {
         lastGravityDirection = gravityDirection;
 
         return smoothedRotation;
+    }
+
+    /** The frame's position within the current tick, recovered from the render time. */
+    private static float partialTick(Entity entity, long timeMs) {
+        return Mth.clamp((timeMs - entity.level().getGameTime() * 50) / 50.0f, 0.0f, 1.0f);
     }
 
     /** Framerate-independent low-pass coefficient: 1 - e^(-dt/tau), snapping on long gaps. */
@@ -107,7 +100,6 @@ public class GravityCameraState {
     }
     
     private static boolean isCloseToIdentity(Quaternionf q) {
-        // Identity quaternion is (0, 0, 0, 1)
         float threshold = 0.01f;
         return Math.abs(q.x) < threshold &&
                Math.abs(q.y) < threshold &&
@@ -121,15 +113,12 @@ public class GravityCameraState {
         if (animation != null && animation.isInAnimation()) {
             return animation.getCurrentGravityRotation(gravityDirection, timeMs);
         } else {
-            // No animation - use the gravity direction's quaternion directly (ship-anchored
-            // gravity resolved from the ship's interpolated render transform this frame)
+            // No animation: the direction's rotation (anchored: from the ship's render transform)
             return VS2Helper.renderWorldToPlayerRotation(gravityDirection);
         }
     }
     
-    /**
-     * Reset the camera state (e.g., when returning to normal gravity).
-     */
+    /** Reset the camera state. */
     public static void reset() {
         lastSmoothedRotation = null;
         lastGravityDirection = null;
@@ -140,10 +129,7 @@ public class GravityCameraState {
         return lastSmoothedRotation != null;
     }
     
-    /**
-     * Get the last smoothed rotation without updating.
-     * Use this for secondary systems that need the same rotation.
-     */
+    /** The last smoothed rotation, without updating. */
     public static Quaternionf getLastSmoothedRotation() {
         return lastSmoothedRotation != null ? new Quaternionf(lastSmoothedRotation) : new Quaternionf();
     }

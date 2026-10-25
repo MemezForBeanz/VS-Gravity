@@ -11,15 +11,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Stands Cosmic Horizons' planet gravity down for entities under a gravity strength
- * override. Cosmos has no gravity API: each entity kind gets an MCreator procedure that,
- * once its dimension/water/elytra gates pass, reads the dimension's gravity and either
- * sets {@code noGravity} (0 g) or adds a world-Y velocity correction. We cancel right
- * where it reads the gravity value — i.e. only when Cosmos would actually act — and clear
- * the {@code noGravity} flag it may have set before the entity entered the field, so the
- * override's strength is the only gravity felt.
+ * Stands Cosmic Horizons' planet gravity down under a gravity strength override. Cosmos' MCreator
+ * procedures read the dimension's gravity and set {@code noGravity} or add a world-Y correction;
+ * this cancels at that read and clears a {@code noGravity} set earlier.
  * <p>
- * Only applied when Cosmic Horizons ({@code cosmos}) is loaded; see GravityMixinPlugin.
+ * Only applied when Cosmic Horizons is loaded (see GravityMixinPlugin).
  */
 @Pseudo
 @Mixin(targets = {
@@ -44,7 +40,7 @@ public abstract class CosmosGravityProcedureMixin {
     )
     private static void gravityapi$yieldToStrengthOverride(Event event, LevelAccessor world, Entity entity,
                                                             CallbackInfo ci) {
-        if (entity != null && GravityChangerAPI.isGravityStrengthOverridden(entity)) {
+        if (entity != null && GravityChangerAPI.isPlanetGravitySuppressed(entity)) {
             if (entity.isNoGravity()) {
                 entity.setNoGravity(false);
             }

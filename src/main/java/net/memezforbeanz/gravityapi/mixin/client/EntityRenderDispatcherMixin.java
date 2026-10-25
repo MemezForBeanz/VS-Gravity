@@ -67,12 +67,21 @@ public abstract class EntityRenderDispatcherMixin {
                 if (!gravityDirection.equals(GravityDirection.DOWN)) {
                     matrices.mulPose(new Quaternionf(gravityDirection.getWorldToPlayerRotation()).conjugate());
                 }
-                return;
+            } else {
+                long timeMs = entity.level().getGameTime() * 50 + (long) (tickDelta * 50);
+                // Always route through the animation so non-cardinal (ship) gravity keeps the
+                // smooth interpolated rotation instead of snapping to the raw target quaternion
+                matrices.mulPose(new Quaternionf(animation.getCurrentGravityRotation(gravityDirection, timeMs)).conjugate());
             }
-            long timeMs = entity.level().getGameTime() * 50 + (long) (tickDelta * 50);
-            // Always route through the animation so non-cardinal (ship) gravity keeps the
-            // smooth interpolated rotation instead of snapping to the raw target quaternion
-            matrices.mulPose(new Quaternionf(animation.getCurrentGravityRotation(gravityDirection, timeMs)).conjugate());
+            // Field free fall's visual tilt (a player-frame rotation, so inside the gravity one)
+            Quaternionf tilt = GravityChangerAPI.getVisualTilt(entity, tickDelta);
+            if (tilt != null) {
+                // About the body's centre, not the feet
+                float halfHeight = entity.getBbHeight() / 2;
+                matrices.translate(0, halfHeight, 0);
+                matrices.mulPose(tilt);
+                matrices.translate(0, -halfHeight, 0);
+            }
         }
     }
     

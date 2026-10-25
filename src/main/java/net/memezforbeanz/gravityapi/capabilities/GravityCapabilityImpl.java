@@ -26,6 +26,10 @@ import net.memezforbeanz.gravityapi.network.UpdateGravityCapabilityPacket;
 import net.memezforbeanz.gravityapi.network.UpdateGravitySyncStatePacket;
 import net.memezforbeanz.gravityapi.util.GCUtil;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
+import net.memezforbeanz.gravityapi.util.QuaternionUtil;
+import net.memezforbeanz.gravityapi.util.FlyingMobs;
+import net.memezforbeanz.gravityapi.api.GravityFields;
+import net.minecraft.world.phys.Vec2;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -43,6 +47,8 @@ import net.minecraft.world.entity.projectile.AbstractArrow;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.util.Mth;
+import org.joml.Quaternionf;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraftforge.api.distmarker.Dist;
@@ -83,33 +89,24 @@ public class GravityCapabilityImpl implements IGravityCapability {
     private double currGravityStrength = 1.0;
     private double currentEffectPriority = Double.MIN_VALUE;
     
-    // Arbitrary gravity direction (for VS ship angles)
-    // This allows gravity in any direction, not just the 6 cardinal directions
+    // Arbitrary (non-cardinal) gravity, for VS ships
     @Nullable
     private GravityDirection arbitraryGravityDirection = null;
 
     @Nullable
     private GravityDirection prevArbitraryGravityDirection = null;
 
-    // Flag to track if gravity is from a camera-only source (VS ship gravity generator)
-    // When true, hitbox should NOT be transformed regardless of whether direction is cardinal
+    // Gravity from a camera-only source (VS ship gravity generator): the hitbox is never transformed
     private boolean isCameraOnlyGravity = false;
 
-    // Cached flag set during tick to indicate entity is in a gravity generator field
-    // This is checked during hitbox calculations as a reliable fallback
+    // Set each tick while the entity is in a gravity generator field
     private boolean inGravityGeneratorField = false;
 
     /**
-     * Check if the current gravity is from a VS ship/camera-only source.
-     * When true, hitbox should NOT be transformed (only camera rotates).
-     * This returns true for VS ship gravity even if the direction happens to be cardinal.
+     * Whether gravity comes from a VS ship / camera-only source, even when the direction is cardinal.
+     * The hitbox is then not transformed, only the camera rotates.
      */
     public boolean isArbitraryGravity() {
-        // Return true if:
-        // 1. Entity is in a gravity generator field (most reliable check), OR
-        // 2. This is camera-only gravity (VS ship gravity generator), OR
-        // 3. We have a non-cardinal arbitrary direction, OR
-        // 4. Entity is currently on a VS ship (fallback check for sync timing issues)
         if (inGravityGeneratorField) {
             return true;
         }
@@ -119,8 +116,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
         if (arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal()) {
             return true;
         }
-        // Fallback: if entity is on a VS ship, treat as arbitrary to prevent hitbox issues
-        // This catches cases where the gravity effect hasn't synced yet
+        // Entity on a VS ship whose gravity effect hasn't synced yet
         if (entity != null && VS2Integration.isVS2Loaded() && VS2Integration.isOnShip(entity)) {
             return true;
         }
@@ -128,21 +124,14 @@ public class GravityCapabilityImpl implements IGravityCapability {
     }
 
     /**
-     * STRICT check: does this entity actually have ship-relative gravity physics active?
-     *
-     * <p>Unlike {@link #isArbitraryGravity()}, this does NOT include the "entity is merely near a
-     * VS ship" proximity fallback. The loose check is right for hitbox/camera decisions (where a
-     * false positive is harmless), but the collision pipeline (ship-local collision, ground-stick,
-     * depenetration, skipping VS2's own ship collision) must only engage when gravity is genuinely
-     * ship-relative - otherwise a normal-gravity player bumping into a ship gets VS2's collision
-     * disabled and our ship-up depenetration shoves them away from the hull (vibration/forcefield).
+     * Strict check: whether ship-relative gravity physics is active.
+     * <p>Unlike {@link #isArbitraryGravity()}, proximity to a ship doesn't count. The ship collision
+     * pipeline must only run for genuinely ship-relative gravity, or normal-gravity entities
+     * touching a hull get pushed away from it.
      */
     public boolean isShipGravityPhysics() {
-        // A *cardinal* arbitrary direction (e.g. a planet-style field generator pulling toward a
-        // block in the normal world) must NOT engage the ship pipeline: those entities get the
-        // classic cardinal gravity physics (transformed hitbox, the cardinal collide mixins).
-        // Genuinely ship-relative gravity is camera-only, in a registry generator field, or
-        // non-cardinal (a ship-rotated vector).
+        // A cardinal arbitrary direction (a planet field off-ship) uses the classic cardinal
+        // physics, not the ship pipeline
         return inGravityGeneratorField || isCameraOnlyGravity
                 || (arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal());
     }
@@ -157,26 +146,37 @@ public class GravityCapabilityImpl implements IGravityCapability {
 
     private boolean isFiringUpdateEvent = false;
 
+    // Field free fall (see applyFieldGravityEffect): pending values take hold if the field's effect wins the tick
+    private @Nullable Vec3 pendingFreeFallPull = null;
+    private @Nullable Vec3 pendingFreeFallFace = null;
+    private double pendingFreeFallPriority = Double.NEGATIVE_INFINITY;
+    private boolean pendingAirborneFlip = false;
+    private double pendingAirborneFlipPriority = Double.NEGATIVE_INFINITY;
+    /** World-space pull of the field holding this entity in free fall this tick, or null. */
+    private @Nullable Vec3 freeFallPull = null;
+    /** World-space face the free fall is heading for (the tilt's target), or null for the pull's. */
+    private @Nullable Vec3 freeFallFace = null;
+    /** Field gravity strength the free fall accelerates with (in-frame gravity is off meanwhile). */
+    private double freeFallStrength = 0;
+    /** This tick's cardinal flip happens in mid-air: pivot on the hitbox centre, not the feet. */
+    private boolean airborneFlip = false;
+    // Visual tilt toward the free fall's target face, in the player frame; slerped from last tick's value
+    private final Quaternionf visualTilt = new Quaternionf();
+    private final Quaternionf prevVisualTilt = new Quaternionf();
+
     private @Nullable GravityCapabilityImpl.GravityDirEffect delayApplyDirEffect = null;
     private double delayApplyStrengthEffect = 1.0;
 
-    // Effect linger: when a per-tick gravity effect (generator field, plate, anchor) misses a
-    // tick — boundary jitter at a small field's edge, tick-order races, sync gaps — hold the
-    // last effect for a few ticks instead of snapping back to base gravity. Without this,
-    // every dropout is a full cardinal flip (hitbox rebuild, setPos, velocity transform) that
-    // reverses one tick later: items twitch at field edges and player movement desyncs.
+    // Effect linger: hold the last per-tick effect for a few ticks when it misses one (boundary
+    // jitter, tick order, sync gaps) instead of flipping back and forth
     private int ticksSinceLastEffect = 1000;
     private Direction lingerDirection = Direction.DOWN;
     private @Nullable GravityDirection lingerArbitrary = null;
     private boolean lingerCameraOnly = false;
     private @Nullable RotationParameters lingerRotationParameters = null;
 
-    // Absolute gravity strength override (a field's "target gravity" setting). Unlike
-    // applyGravityStrengthEffect, which multiplies, an override REPLACES the strength —
-    // planet gravity included: while one is active, the planet-mod compat layer (see
-    // compat.planets) stands Ad Astra / Cosmic Horizons down so the override is the only
-    // gravity the entity feels. Transient like direction effects: re-applied every tick,
-    // highest priority wins, lingers through short dropouts, lapses on its own.
+    // Absolute strength override (a field's target gravity): replaces the strength, planet mod
+    // gravity included (see compat.planets). Re-applied every tick, highest priority wins.
     private double pendingStrengthOverride = Double.NaN;
     private double pendingStrengthOverridePriority = Double.NEGATIVE_INFINITY;
     private double strengthOverride = Double.NaN;
@@ -270,13 +270,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
 
         updateGravityStatus(true);
 
-        // AFTER the update (so it also corrects effects that were delay-applied inside it, whose
-        // vectors were computed from last tick's ship transform), re-anchor ship-relative gravity
-        // to the ship's current rotation - otherwise "down" lags a spinning ship by at least one
-        // tick (more under effect linger) and the collision frame diverges from the geometry.
+        // After the update, so delay-applied effects are corrected too: re-anchor ship-relative
+        // gravity to the ship's current rotation
         reanchorArbitraryToShipRotation();
 
         applyGravityChange();
+
+        tickFieldFreeFall();
         
         if (!entity.level.isClientSide()) {
             if (needsSync) {
@@ -286,20 +286,14 @@ public class GravityCapabilityImpl implements IGravityCapability {
     }
 
     /**
-     * Rotate the stored ship-relative (arbitrary non-cardinal) gravity vectors by the rotation the
-     * supporting ship underwent this tick. Stored directions are world-space snapshots: the
-     * applying block entity computed them from the ship transform of the tick it ran in, and the
-     * effect linger can hold them for several more ticks. On a rotating ship every such snapshot
-     * points where "down" USED to be - the entity then collides in a frame that no longer matches
-     * the ship geometry, which is the clip-through/lagging-gravity bug on spinning ships.
+     * Rotate stored ship-relative gravity by this tick's ship rotation. Unanchored directions are
+     * world-space snapshots and would otherwise lag a rotating ship.
      */
     private void reanchorArbitraryToShipRotation() {
         if (!VS2Integration.isVS2Loaded()) {
             return;
         }
-        // Ship-anchored directions are exact: re-resolve them from the ship's current transform
-        // (no accumulated delta error, no tick of lag). Only unanchored snapshots fall back to
-        // the delta rotation below.
+        // Anchored directions re-resolve exactly from the ship's current transform
         boolean resolvedAnchored = false;
         if (arbitraryGravityDirection != null && arbitraryGravityDirection.isShipAnchored()) {
             GravityDirection resolved = resolveAnchored(arbitraryGravityDirection);
@@ -315,10 +309,8 @@ public class GravityCapabilityImpl implements IGravityCapability {
         if (resolvedAnchored) {
             return;
         }
-        // Camera-only (registry) effects are computed live inside this tick's update from the
-        // ship's CURRENT transform - only rotate those when the linger is holding a stale copy.
-        // Per-entity effects (bridge fields, plating) are delay-applied from last tick's block
-        // tick and are always one transform behind.
+        // Camera-only effects were computed from this tick's transform; only a lingering copy is stale.
+        // Per-entity effects are always one tick behind.
         if (isCameraOnlyGravity && ticksSinceLastEffect == 0) {
             return;
         }
@@ -334,23 +326,20 @@ public class GravityCapabilityImpl implements IGravityCapability {
         }
         GravityDirection rotatedArbitrary = hasArbitrary ? rotatedBy(arbitraryGravityDirection, delta) : null;
         if (hasLinger) {
-            // The linger slot usually aliases the live direction; rotate it exactly once.
+            // The linger slot usually aliases the live direction: rotate it once
             lingerArbitrary = (lingerArbitrary == arbitraryGravityDirection && rotatedArbitrary != null)
                     ? rotatedArbitrary
                     : rotatedBy(lingerArbitrary, delta);
         }
-        // currGravityDirection is deliberately left alone: the effect-application path manages it
-        // (camera-only ship gravity keeps it DOWN so the hitbox stays untransformed), and the next
-        // fresh effect updates it through the normal angle-limiting/sync path if the nearest
-        // cardinal genuinely changes.
+        // currGravityDirection is managed by the effect path (camera-only gravity keeps it DOWN)
         if (rotatedArbitrary != null) {
             arbitraryGravityDirection = rotatedArbitrary;
         }
     }
 
     private static GravityDirection resolveAnchored(GravityDirection direction) {
-        Vec3 world = net.memezforbeanz.gravityapi.compat.vs2.VS2Helper.anchoredToWorld(direction, false);
-        return world != null && world.lengthSqr() > 1.0E-9 ? direction.withWorldVector(world) : direction;
+        org.joml.Quaterniond shipToWorld = net.memezforbeanz.gravityapi.compat.vs2.VS2Helper.anchoredShipToWorld(direction, false);
+        return shipToWorld != null ? direction.withShipRotation(shipToWorld) : direction;
     }
 
     private static GravityDirection rotatedBy(GravityDirection direction, org.joml.Quaterniond rotation) {
@@ -370,11 +359,8 @@ public class GravityCapabilityImpl implements IGravityCapability {
     }
 
     /**
-     * A gravity plate's bid for this entity's gravity this tick (AmethystGravity-reattracted
-     * model): plates never apply gravity directly; each nearby plate face adds a candidate,
-     * and {@link #resolvePlatingCandidates()} picks one per tick with hysteresis. This is
-     * what makes wall-walking stable - competing plates at a corner can't fight each other,
-     * and the currently-held direction wins ties instead of flip-flopping.
+     * A gravity plate's bid for this entity's gravity this tick. Each nearby plate face adds a
+     * candidate and {@link #resolvePlatingCandidates()} picks one, preferring the held direction.
      */
     public record PlatingCandidate(Vec3 worldDirection, boolean shipFrame, double volume, BlockPos source) {}
 
@@ -385,10 +371,8 @@ public class GravityCapabilityImpl implements IGravityCapability {
     @Nullable
     private Vec3 stickyPlatingDirection = null;
 
-    // Client-authoritative plating for players: the client's plate detection runs against
-    // its own (authoritative) position, so the client reports its resolved choice to the
-    // server instead of the server detecting independently 1-2 ticks behind - independent
-    // detection made both sides flip at different times and fight over position.
+    // Client-authoritative plating for players: the client reports its choice so both sides flip
+    // together
     @Nullable
     private Vec3 lastReportedPlatingDirection = null;
     @Nullable
@@ -410,10 +394,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
         clientPlatingReportGameTime = entity.level().getGameTime();
     }
 
-    /**
-     * Anticheat bound for a client plating report, and per-tick staleness check: the source
-     * block must still be a plate and the player must plausibly be within its reach.
-     */
+    /** Sanity check for a client plating report: the source must still be a plate within reach. */
     public boolean isPlatingReportValid(PlatingCandidate candidate) {
         if (!(entity.level().getBlockEntity(candidate.source()) instanceof
                 net.memezforbeanz.gravityapi.plating.GravityPlatingBlockEntity)) {
@@ -458,8 +439,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
     }
 
     private void resolvePlatingCandidates() {
-        // Server side: players are excluded from server plate detection; inject the
-        // verified client report so the server flips in step with the client
+        // Players are excluded from server plate detection; use their verified client report
         if (!entity.level().isClientSide() && entity instanceof net.minecraft.server.level.ServerPlayer
                 && clientReportedPlating != null) {
             if (entity.level().getGameTime() - clientPlatingReportGameTime <= 40
@@ -498,8 +478,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
             if (chosen == null) {
                 chosen = c;
             }
-            // Hysteresis: if the direction we already hold is still among the best
-            // candidates, keep it rather than switching to whichever plate iterated first
+            // Hysteresis: keep the held direction while it's among the best candidates
             if (stickyPlatingDirection != null && c.worldDirection().dot(stickyPlatingDirection) > 0.999) {
                 chosen = c;
                 break;
@@ -515,16 +494,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
         GravityDirection direction = chosen.shipFrame()
             ? GravityDirection.shipRelative(chosen.worldDirection())
             : GravityDirection.fromVector(chosen.worldDirection());
-        // Plate candidates were computed in last tick's block ticks, so anchor them with the
-        // ship transform of that tick
+        // Plate candidates come from last tick's block ticks: anchor with that tick's ship transform
         applyGravityDirectionEffect(anchorToShip(direction, true), params, PLATING_EFFECT_PRIORITY);
     }
 
     public void updateGravityStatus(boolean sendPacketIfNecessary) {
-        // Always check if entity is in a gravity generator field (for hitbox calculations)
-        // This needs to run even for entities that accept server sync.
-        // Computed once here and reused below - the registry walk does a block-entity lookup and
-        // (on ships) a transform per generator, so querying twice per entity per tick adds up.
+        // Needed for hitbox calculations even for entities that accept server sync; computed once
+        // and reused below
         GravityGeneratorRegistry.GravityFieldResult registryFieldResult =
                 GravityGeneratorRegistry.getGravityFieldEffect(entity);
         if (VS2Integration.isVS2Loaded()) {
@@ -536,9 +512,10 @@ public class GravityCapabilityImpl implements IGravityCapability {
         // (possibly for making it harder to cheat for hacked clients)
         // then we don't calculate its gravity in normal way in client
         if (shouldAcceptServerSync()) {
-            // Plate block entities still tick client-side and add candidates for these
-            // entities; drop them so the list doesn't grow unbounded
+            // Plate block entities still tick client-side for these entities; drop their candidates
             platingCandidates.clear();
+            clearPendingFieldState();
+            freeFallPull = null;
             return;
         }
         
@@ -549,6 +526,9 @@ public class GravityCapabilityImpl implements IGravityCapability {
         if (vehicle != null) {
             currGravityDirection = GravityChangerAPI.getGravityDirection(vehicle);
             currGravityStrength = GravityChangerAPI.getGravityStrength(vehicle);
+            // Riding: no field free fall
+            clearPendingFieldState();
+            freeFallPull = null;
         }
         else {
             currGravityDirection = baseGravityDirection;
@@ -575,9 +555,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 inGravityGeneratorField = (fieldResult != null);
 
                 if (fieldResult != null) {
-                    // Use camera-only gravity for VS ships
-                    // This keeps currGravityDirection as DOWN so hitbox/physics stay normal
-                    // Only the camera and arbitrary direction are affected
+                    // VS ship generator: camera-only gravity, physics stays DOWN
                     this.applyCameraOnlyGravityEffect(
                             fieldResult.gravityDirection(),
                             fieldResult.parameters(),
@@ -588,11 +566,12 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 // Gravity plating: resolve this tick's plate candidates into (at most) one effect
                 resolvePlatingCandidates();
 
-                // Before the non-living early-out below: items and minecarts in a field
-                // feel its target gravity too
+                // Before the non-living early-out: items and minecarts feel the target gravity too
                 resolveStrengthOverride();
 
                 if (!(entity instanceof LivingEntity livingEntity)) {
+                    // Non-living entities never free-fall
+                    clearPendingFieldState();
                     return;
                 }
                 
@@ -625,17 +604,19 @@ public class GravityCapabilityImpl implements IGravityCapability {
 
                 if (delayApplyDirEffect != null) {
                     if (delayApplyDirEffect.isCameraOnly()) {
-                        // Camera-only effect - keep direction as DOWN, only set arbitrary
+                        // Camera-only: direction stays DOWN, only the arbitrary direction is set
                         applyCameraOnlyGravityEffect(
                             delayApplyDirEffect.arbitraryDirection(),
                             delayApplyDirEffect.rotationParameters(),
                             delayApplyDirEffect.priority()
                         );
                     } else if (delayApplyDirEffect.arbitraryDirection() != null) {
+                        // Already limited (or deliberately not) when issued
                         applyGravityDirectionEffect(
                             delayApplyDirEffect.arbitraryDirection(),
                             delayApplyDirEffect.rotationParameters(),
-                            delayApplyDirEffect.priority()
+                            delayApplyDirEffect.priority(),
+                            false
                         );
                     } else {
                         applyGravityDirectionEffect(
@@ -647,6 +628,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 }
                 currGravityStrength *= delayApplyStrengthEffect;
                 delayApplyStrengthEffect = 1.0;
+                resolveFieldFreeFall();
             }
             finally {
                 isFiringUpdateEvent = false;
@@ -724,11 +706,8 @@ public class GravityCapabilityImpl implements IGravityCapability {
     {
 		this.baseGravityDirection = baseGravityDirection;
 		this.baseGravityStrength = baseGravityStrength;
-		// The local client player computes its current gravity every tick from local
-		// effects (plates, fields) - it is the prediction authority for its own feel.
-		// The server computes the same thing 1-2 ticks apart; letting its packet stomp
-		// curr/arbitrary here caused a flip-fight around every transition (the "server
-		// desync"). Only remote entities take the server's current state verbatim.
+		// The local player computes its own current gravity from local effects; taking the server's
+		// (a tick or two apart) caused flip-fights. Only remote entities take server state.
 		if (shouldAcceptServerSync()) {
 			this.currGravityDirection = currentGravityDirection;
 			this.currGravityStrength = currentGravityStrength;
@@ -751,6 +730,191 @@ public class GravityCapabilityImpl implements IGravityCapability {
     }
 
     /**
+     * Apply a gravity field's pull, Mario Galaxy style. Physics gravity is always a face direction
+     * (a world cardinal, or a ship-relative face); the true pull is only a force and a visual tilt:
+     * <ul>
+     *     <li>grounded or {@code nearSurface}: gravity is {@code landingFace};</li>
+     *     <li>otherwise the current frame is held, in-frame gravity is off, and {@code pull}
+     *     accelerates the entity while its view tilts toward the face (see {@link #getVisualTilt}).</li>
+     * </ul>
+     *
+     * @param pull        the field's true pull in world space
+     * @param landingFace the world-space face to stand on; null to use {@code pull}'s
+     * @param shipFrame   the field is on a VS ship: faces are ship-relative, never cardinal
+     */
+    public void applyFieldGravityEffect(
+        @NotNull Vec3 pull,
+        @Nullable Vec3 landingFace,
+        boolean nearSurface,
+        boolean shipFrame,
+        @Nullable RotationParameters rotationParameters,
+        double priority
+    ) {
+        if (pull.lengthSqr() < 1.0E-8) {
+            return;
+        }
+        if (FlyingMobs.isFlying(entity)) {
+            // Flying mobs keep world-frame physics (vanilla flight AI) and only lean into the
+            // field's pull on screen (see tickFieldFreeFall); landed, they take faces as usual
+            return;
+        }
+        Vec3 face = landingFace != null && landingFace.lengthSqr() > 1.0E-8 ? landingFace.normalize() : pull.normalize();
+        boolean grounded = entity.onGround();
+        // Swimming, climbing and riding keep vanilla's in-frame gravity
+        boolean supported = grounded || entity.isInWater() || entity.isInLava() || entity.isPassenger()
+            || (entity instanceof LivingEntity living && living.onClimbable());
+        // Creative flight and elytra steer in the frame's own axes, which a tilted view would
+        // contradict: they take the face directly
+        boolean selfPropelled = (entity instanceof Player player && player.getAbilities().flying)
+            || (entity instanceof LivingEntity living && living.isFallFlying());
+        supported |= selfPropelled;
+        if (supported || nearSurface || !GravityConfig.fieldFreeFall.get() || !(entity instanceof LivingEntity)) {
+            GravityDirection direction = shipFrame
+                ? GravityDirection.shipRelative(face)
+                : GravityDirection.fromDirection(Direction.getNearest(face.x, face.y, face.z));
+            // Only landing out of a free fall pivots on the hitbox centre and keeps world momentum;
+            // other field flips are the upstream flip about the feet
+            if (freeFallPull != null && priority > pendingAirborneFlipPriority) {
+                pendingAirborneFlip = true;
+                pendingAirborneFlipPriority = priority;
+            }
+            // Field faces are exact: no angle-limited steps (a 180° flip included)
+            applyGravityDirectionEffect(direction, rotationParameters, priority, false);
+            return;
+        }
+        // Free fall: hold the current frame
+        GravityDirection hold = arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal()
+            ? arbitraryGravityDirection
+            : GravityDirection.fromDirection(currGravityDirection);
+        if (pendingFreeFallPull == null || priority > pendingFreeFallPriority) {
+            pendingFreeFallPull = pull.normalize();
+            pendingFreeFallFace = face;
+            pendingFreeFallPriority = priority;
+        }
+        applyGravityDirectionEffect(hold, rotationParameters, priority);
+    }
+
+    /** After this tick's effects resolved: start free fall / mid-air flip if a field's effect won. */
+    private void resolveFieldFreeFall() {
+        freeFallPull = null;
+        airborneFlip = false;
+        if (pendingFreeFallPull != null && pendingFreeFallPriority == currentEffectPriority) {
+            freeFallPull = pendingFreeFallPull;
+            freeFallFace = pendingFreeFallFace;
+            freeFallStrength = currGravityStrength;
+            // The pull replaces in-frame gravity (see tickFieldFreeFall)
+            currGravityStrength = 0;
+        } else if (pendingAirborneFlip && pendingAirborneFlipPriority == currentEffectPriority) {
+            airborneFlip = true;
+        }
+        clearPendingFieldState();
+    }
+
+    private void clearPendingFieldState() {
+        pendingFreeFallPull = null;
+        pendingFreeFallFace = null;
+        pendingFreeFallPriority = Double.NEGATIVE_INFINITY;
+        pendingAirborneFlip = false;
+        pendingAirborneFlipPriority = Double.NEGATIVE_INFINITY;
+    }
+
+    /** Vanilla's per-tick gravity acceleration for living entities, at 1.0 strength. */
+    private static final double LIVING_GRAVITY = 0.08;
+
+    /** Share of the remaining tilt turned per tick (capped by the configured rate): eases in. */
+    private static final float TILT_APPROACH = 0.15f;
+    /** Tilt turned back per tick when a free fall ends without a flip (about half a second). */
+    private static final float TILT_RELEASE_RADIANS = (float) Math.toRadians(18);
+
+    /** This tick's free-fall acceleration (world space), waiting for travel. */
+    @Nullable
+    private Vec3 pendingFreeFallAcceleration;
+
+    /**
+     * Add this tick's free-fall acceleration. Called as travel starts, after vanilla zeroes
+     * velocity components below 0.003, like vanilla gravity is.
+     */
+    public void applyFreeFallAcceleration() {
+        if (pendingFreeFallAcceleration != null) {
+            entity.setDeltaMovement(entity.getDeltaMovement()
+                .add(getCurrentGravityDirection().vecWorldToPlayer(pendingFreeFallAcceleration)));
+            pendingFreeFallAcceleration = null;
+        }
+    }
+
+    /** Free-fall acceleration along the field's pull, and the visual tilt toward the target face. */
+    private void tickFieldFreeFall() {
+        airborneFlip = false;
+        pendingFreeFallAcceleration = null;
+        prevVisualTilt.set(visualTilt);
+        if (freeFallPull != null) {
+            boolean flying = entity instanceof Player player && player.getAbilities().flying;
+            if (!flying && !entity.isNoGravity() && freeFallStrength > 0) {
+                // Added at travel (see applyFreeFallAcceleration): here, aiStep's small-velocity
+                // cutoff would erase a weak pull every tick and leave the entity hanging
+                pendingFreeFallAcceleration = freeFallPull.scale(LIVING_GRAVITY * freeFallStrength);
+            }
+            // Aim at the landing face so the landing flip has little left to turn
+            Vec3 target = getCurrentGravityDirection()
+                .vecWorldToPlayer(freeFallFace != null ? freeFallFace : freeFallPull).normalize();
+            Quaternionf targetTilt = new Quaternionf().rotationTo(0, -1, 0, (float) target.x, (float) target.y, (float) target.z);
+            float maxStep = (float) (Math.PI / 2 / (GravityConfig.fieldTiltSeconds.get() * 20.0));
+            turnToward(visualTilt, targetTilt, maxStep, TILT_APPROACH);
+        } else if (FlyingMobs.isFlying(entity)) {
+            // Read from the field samplers on both sides, so remote clients lean the model too
+            Vec3 field = GravityFields.fieldAcceleration(entity.level(), entity.getBoundingBox().getCenter());
+            Quaternionf targetTilt = new Quaternionf();
+            if (field != null && field.lengthSqr() > 1.0E-8) {
+                Vec3 target = getCurrentGravityDirection().vecWorldToPlayer(field).normalize();
+                targetTilt.rotationTo(0, -1, 0, (float) target.x, (float) target.y, (float) target.z);
+            }
+            float maxStep = (float) (Math.PI / 2 / (GravityConfig.fieldTiltSeconds.get() * 20.0));
+            turnToward(visualTilt, targetTilt, maxStep, TILT_APPROACH);
+        } else {
+            turnToward(visualTilt, new Quaternionf(), TILT_RELEASE_RADIANS, 1.0f);
+        }
+    }
+
+    /** Turn {@code current} toward {@code target}: {@code share} of the way, at most {@code maxStep} radians. */
+    private static void turnToward(Quaternionf current, Quaternionf target, float maxStep, float share) {
+        float dot = Math.abs(current.x * target.x + current.y * target.y + current.z * target.z + current.w * target.w);
+        float angle = 2.0f * (float) Math.acos(Math.min(dot, 1.0f));
+        if (angle < 1.0E-4f) {
+            current.set(target);
+            return;
+        }
+        float step = Math.min(angle * share, maxStep);
+        // Never crawl the last few degrees
+        step = Math.max(step, Math.min(angle, (float) Math.toRadians(0.5)));
+        current.slerp(target, Math.min(step / angle, 1.0f)).normalize();
+    }
+
+    private static boolean isIdentity(Quaternionf q) {
+        return Math.abs(q.w) > 1.0f - 1.0E-6f;
+    }
+
+    /**
+     * The free fall's tilt, or null when there is none. A player-frame rotation
+     * ({@code worldToPlayer' = tilt^-1 * worldToPlayer}), slerped between the last two ticks.
+     */
+    @Nullable
+    public Quaternionf getVisualTilt(float partialTick) {
+        if (isIdentity(visualTilt) && isIdentity(prevVisualTilt)) {
+            return null;
+        }
+        return new Quaternionf(prevVisualTilt).slerp(visualTilt, Mth.clamp(partialTick, 0, 1));
+    }
+
+    /** Return and clear the tilt, for a starting rotation animation to take over. */
+    @Nullable
+    public Quaternionf consumeVisualTilt() {
+        Quaternionf tilt = isIdentity(visualTilt) ? null : new Quaternionf(visualTilt);
+        visualTilt.identity();
+        prevVisualTilt.identity();
+        return tilt;
+    }
+
+    /**
      * Apply a camera-only gravity effect for VS ships.
      * This rotates the camera to match the ship orientation but does NOT affect physics.
      * The player's movement, collisions, and hitbox remain normal (world-aligned).
@@ -769,11 +933,9 @@ public class GravityCapabilityImpl implements IGravityCapability {
         if (isFiringUpdateEvent) {
             if (priority > currentEffectPriority) {
                 currentEffectPriority = priority;
-                // EXPLICITLY set currGravityDirection to DOWN - this ensures hitbox stays normal!
-                // The arbitrary direction is only used for camera rotation
+                // DOWN keeps the hitbox untransformed; the arbitrary direction only drives the camera
                 currGravityDirection = Direction.DOWN;
                 arbitraryGravityDirection = limitedGravityDirection;
-                // Mark this as camera-only gravity so hitbox stays untransformed
                 isCameraOnlyGravity = true;
 
                 if (rotationParameters != null) {
@@ -783,7 +945,6 @@ public class GravityCapabilityImpl implements IGravityCapability {
         }
         else {
             if (delayApplyDirEffect == null || priority > delayApplyDirEffect.priority()) {
-                // Store with DOWN as the cardinal direction and mark as camera-only
                 delayApplyDirEffect = new GravityDirEffect(
                     Direction.DOWN, rotationParameters, priority, limitedGravityDirection, true
                 );
@@ -792,20 +953,27 @@ public class GravityCapabilityImpl implements IGravityCapability {
     }
 
     /**
-     * Apply an arbitrary gravity direction effect (supports any angle, not just cardinal directions)
-     * This DOES affect physics - use applyCameraOnlyGravityEffect for VS ships.
-     * Includes angle limiting to prevent sudden large gravity changes
+     * Apply a gravity direction effect (any angle), with angle limiting.
+     * This affects physics; use applyCameraOnlyGravityEffect for camera-only ship gravity.
      */
     public void applyGravityDirectionEffect(
         @NotNull GravityDirection gravityDirection,
         @Nullable RotationParameters rotationParameters,
         double priority
     ) {
-        // Apply angle limiting if we have a previous direction. Ship-relative directions are
-        // anchored here, at the moment they're issued: block ticks compute them from the ship
-        // transform of this very instant, so this is the one place the ship-frame direction
-        // can be recovered exactly.
-        GravityDirection limitedGravityDirection = anchorToShip(applyAngleLimiting(gravityDirection), false);
+        applyGravityDirectionEffect(gravityDirection, rotationParameters, priority, true);
+    }
+
+    private void applyGravityDirectionEffect(
+        @NotNull GravityDirection gravityDirection,
+        @Nullable RotationParameters rotationParameters,
+        double priority,
+        boolean limitAngle
+    ) {
+        // Ship-relative directions are anchored at issue time, when the ship transform matches the
+        // one the block entity used. Delayed effects store the anchored, limited direction.
+        GravityDirection limitedGravityDirection = anchorToShip(
+            limitAngle ? applyAngleLimiting(gravityDirection) : gravityDirection, false);
 
         if (isFiringUpdateEvent) {
             if (priority > currentEffectPriority) {
@@ -831,11 +999,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
         }
     }
 
-    /**
-     * Anchor a ship-relative (non-cardinal) direction to the ship this entity is on, so it rides
-     * the ship instead of lagging it as a world snapshot. Leaves cardinal, already-anchored and
-     * off-ship directions as they are.
-     */
+    /** Anchor a ship-relative direction to the entity's ship. Cardinal, anchored and off-ship directions are returned as is. */
     private GravityDirection anchorToShip(GravityDirection direction, boolean prevTick) {
         if (direction.isCardinal() || direction.isShipAnchored() || !VS2Integration.isVS2Loaded()) {
             return direction;
@@ -845,10 +1009,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
         return anchored != null ? anchored : direction;
     }
 
-    /**
-     * Apply angle limiting to prevent sudden large gravity direction changes.
-     * If the angle between current and target gravity is too large, interpolate toward it.
-     */
+    /** Limit how far gravity turns per change: larger changes are interpolated by the configured maximum. */
     private GravityDirection applyAngleLimiting(GravityDirection targetDirection) {
         if (!GravityConfig.smoothArbitraryGravity.get()) {
             return targetDirection;
@@ -859,11 +1020,8 @@ public class GravityCapabilityImpl implements IGravityCapability {
             return targetDirection;
         }
 
-        // Cardinal-to-cardinal changes snap like classic GravityChanger: the RotationAnimation
-        // smooths the camera, and physics must flip in one tick. Interpolating here would emit
-        // non-cardinal intermediates (untransformed hitbox, ship pipeline) for a plain
-        // wall-to-wall transition, and the >90-degree guard below would swallow 180-degree flips
-        // outright - a planet-style field could never pull an entity on its far side.
+        // Cardinal-to-cardinal changes snap (the animation smooths the camera); 180° flips must
+        // not be blocked
         if (currentDirection.isCardinal() && targetDirection.isCardinal()) {
             return targetDirection;
         }
@@ -872,22 +1030,17 @@ public class GravityCapabilityImpl implements IGravityCapability {
         Vec3 targetVec = targetDirection.getVector().normalize();
 
         double dot = currentVec.dot(targetVec);
-        // Clamp to avoid NaN from acos
         dot = Math.max(-1.0, Math.min(1.0, dot));
         double angleRadians = Math.acos(dot);
         double angleDegrees = Math.toDegrees(angleRadians);
 
         double maxAngle = GravityConfig.maxGravityChangeAngle.get();
 
-        // If angle is within limit, use target directly
         if (angleDegrees <= maxAngle) {
             return targetDirection;
         }
 
-        // Interpolate toward target by maxAngle. Never swallow large changes outright:
-        // with effect linger holding the previous direction between plate handoffs, a
-        // >90-degree guard would permanently block big transitions (plating on the far
-        // side of a rotating ship could never take over).
+        // Never swallow a large change outright: step toward it
         double t = maxAngle / angleDegrees;
         Vec3 interpolated = slerp(currentVec, targetVec, t);
 
@@ -903,13 +1056,11 @@ public class GravityCapabilityImpl implements IGravityCapability {
 
         double theta = Math.acos(dot);
         if (theta < 0.001) {
-            // Vectors are nearly parallel, use linear interpolation
             return v1.scale(1 - t).add(v2.scale(t)).normalize();
         }
 
         if (theta > Math.PI - 0.001) {
-            // Antiparallel: sin(theta) ~ 0, the slerp formula divides by zero. Rotate v1
-            // around any perpendicular axis instead so 180-degree flips still progress.
+            // Antiparallel: rotate about any perpendicular axis
             Vec3 axis = Math.abs(v1.y) < 0.9 ? new Vec3(0, 1, 0) : new Vec3(1, 0, 0);
             Vec3 perp = v1.cross(axis).normalize();
             double angle = t * theta;
@@ -976,10 +1127,8 @@ public class GravityCapabilityImpl implements IGravityCapability {
             return;
         }
         
-        // Skip bounding box update for arbitrary gravity (VS ships)
-        // The hitbox should stay unchanged when affected by gravity generators
+        // Arbitrary (ship) gravity keeps the hitbox unchanged
         if (!isArbitraryGravity()) {
-            // update bounding box only for non-arbitrary (cardinal) gravity
             entity.setBoundingBox(((EntityAccessor) entity).gc_makeBoundingBox());
         }
 
@@ -998,9 +1147,10 @@ public class GravityCapabilityImpl implements IGravityCapability {
 
         long timeMs = entity.level().getGameTime() * 50;
         
-        Vec3 relativeRotationCenter = getLocalRotationCenter(
-            entity, oldGravity, newGravity, rotationParameters
-        );
+        // A mid-air flip out of a field free fall pivots on the hitbox centre
+        Vec3 relativeRotationCenter = airborneFlip
+            ? new Vec3(0, entity.getDimensions(entity.getPose()).height / 2, 0)
+            : getLocalRotationCenter(entity, oldGravity, newGravity, rotationParameters);
         Vec3 oldPos = entity.position();
         Vec3 oldLastTickPos = new Vec3(entity.xOld, entity.yOld, entity.zOld);
         Vec3 rotationCenter = oldPos.add(RotationUtil.vecPlayerToWorld(relativeRotationCenter, oldGravity));
@@ -1016,8 +1166,13 @@ public class GravityCapabilityImpl implements IGravityCapability {
         entity.yOld = newLastTickPos.y;
         entity.zOld = newLastTickPos.z;
         
-        adjustEntityPosition(oldGravity, newGravity, entity.getBoundingBox());
-        
+        // In mid-air, back out along the new up
+        adjustEntityPosition(airborneFlip ? newGravity : oldGravity, newGravity, entity.getBoundingBox());
+
+        if (!entity.level().isClientSide()) {
+            // The client folds the tilt into its flip animation; the server just drops it
+            consumeVisualTilt();
+        }
         if (entity.level().isClientSide()) {
             Validate.notNull(animation, "gravity animation is null");
             
@@ -1031,6 +1186,11 @@ public class GravityCapabilityImpl implements IGravityCapability {
             );
         }
         
+        if (airborneFlip) {
+            // Landing out of a free fall keeps world momentum (the position delta is zero here for the local player)
+            entity.setDeltaMovement(reframeKeepingWorldMomentum(entity.getDeltaMovement(), oldGravity, newGravity));
+            return;
+        }
         Vec3 realWorldVelocity = getRealWorldVelocity(entity, oldGravity);
         if (rotationParameters.rotateVelocity()) {
             // Rotate velocity with gravity, this will cause things to appear to take a sharp turn
@@ -1079,6 +1239,17 @@ public class GravityCapabilityImpl implements IGravityCapability {
         }
     }
     
+    /** A player-frame velocity re-expressed in the new frame, world direction kept, using the exact ship-relative frames. */
+    private Vec3 reframeKeepingWorldMomentum(Vec3 velocity, Direction oldGravity, Direction newGravity) {
+        GravityDirection from = prevArbitraryGravityDirection != null
+                && prevArbitraryGravityDirection.getNearestDirection() == oldGravity
+            ? prevArbitraryGravityDirection : GravityDirection.fromDirection(oldGravity);
+        GravityDirection to = arbitraryGravityDirection != null
+                && arbitraryGravityDirection.getNearestDirection() == newGravity
+            ? arbitraryGravityDirection : GravityDirection.fromDirection(newGravity);
+        return to.vecWorldToPlayer(from.vecPlayerToWorld(velocity));
+    }
+
     // Adjust position to avoid suffocation in blocks when changing gravity
     private void adjustEntityPosition(Direction oldGravity, Direction newGravity, AABB entityBoundingBox) {
         if (!GravityConfig.adjustPositionAfterChangingGravity.get()) {
@@ -1087,8 +1258,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
         
         if (entity instanceof AreaEffectCloud || entity instanceof AbstractArrow || entity instanceof EndCrystal
                 || entity instanceof ItemEntity || entity instanceof ExperienceOrb) {
-            // Items and orbs are small enough not to suffocate; nudging them on every flip
-            // makes them visibly pop around at field boundaries
+            // Items and orbs don't suffocate; nudging them makes them pop around at field edges
             return;
         }
         
@@ -1161,44 +1331,29 @@ public class GravityCapabilityImpl implements IGravityCapability {
         return currGravityDirection;
     }
     
-    /**
-     * Get the arbitrary gravity direction (supports any angle).
-     * Returns null if gravity is a cardinal direction.
-     */
+    /** The arbitrary gravity direction, or null for cardinal gravity. */
     @Nullable
     public GravityDirection getArbitraryGravityDirection() {
         return arbitraryGravityDirection;
     }
 
-    /**
-     * Get the current gravity as a GravityDirection object (supports any angle).
-     * This is the preferred method for getting gravity direction when supporting VS ships.
-     */
-    /**
-     * Last arbitrary (ship-aligned) gravity direction seen while the entity was inside a gravity
-     * generator field. Used to keep physics gravity stable - see {@link #getCurrentGravityDirection()}.
-     */
+    /** The current gravity, including arbitrary (ship) directions. */
+    /** Last ship-aligned direction seen inside a generator field (see {@link #getCurrentGravityDirection()}). */
     private GravityDirection lastFieldArbitrary = null;
 
     public GravityDirection getCurrentGravityDirection() {
         if (arbitraryGravityDirection != null) {
-            // Remember the good value while we're genuinely in a field so we can ride out transient
-            // nulls below.
             if (inGravityGeneratorField) {
                 lastFieldArbitrary = arbitraryGravityDirection;
             }
             return arbitraryGravityDirection;
         }
-        // Robustness: while standing in a gravity-generator field, arbitraryGravityDirection can be
-        // transiently null between/within ticks (effect re-evaluation and client/server sync races).
-        // If physics reads world-DOWN for even a single move sub-step, that world-down vector - run
-        // through the ship-local collision on a tilted ship - leaves an uncancelled ship-horizontal
-        // component and the entity slides off the deck. Keep returning the last known ship-aligned
-        // direction for as long as we remain in the field so every move sub-step is consistent.
+        // In a generator field arbitraryGravityDirection can be null for a moment (sync races); a
+        // single world-DOWN move step on a tilted ship slides the entity off the deck, so keep the
+        // last ship-aligned direction while in the field
         if (inGravityGeneratorField && lastFieldArbitrary != null) {
             return lastFieldArbitrary;
         }
-        // Truly out of any field - forget the cached direction and use the cardinal gravity.
         lastFieldArbitrary = null;
         return GravityDirection.fromDirection(currGravityDirection);
     }
@@ -1262,17 +1417,22 @@ public class GravityCapabilityImpl implements IGravityCapability {
 
         boolean leavingArbitraryGravity = (prevArbitraryGravityDirection != null && arbitraryGravityDirection == null);
 
-        // Same direction in the same ship's frame: the world vector only changed because the ship
-        // moved. The gravity frame turned WITH the ship, so there's nothing to transition - no
-        // rotation-centre repositioning, no velocity re-framing, no animation (rendering follows
-        // the ship per frame). Running the flip routine here teleported entities and kicked their
-        // velocity every time a rolling ship carried the vector past a cardinal's 45° boundary.
+        // Same direction in the same ship frame: only the ship moved, and the frame moved with it.
+        // Nothing to transition.
         boolean shipMotionOnly = arbitraryGravityDirection != null
                 && arbitraryGravityDirection.isSameShipFrameAs(prevArbitraryGravityDirection);
+
+        // Both directions anchored to a ship: the ship-frame flip, never the cardinal or generic paths
+        boolean shipFrameChange = !shipMotionOnly && arbitraryGravityDirection != null
+                && prevArbitraryGravityDirection != null
+                && arbitraryGravityDirection.isShipAnchored() && prevArbitraryGravityDirection.isShipAnchored();
 
         if (shipMotionOnly) {
             prevGravityDirection = currGravityDirection;
             entity.fallDistance = 0;
+        } else if (shipFrameChange) {
+            prevGravityDirection = currGravityDirection;
+            applyShipFrameChange(prevArbitraryGravityDirection, arbitraryGravityDirection, currentRotationParameters);
         } else if (cardinalChanged) {
             // Cardinal direction changed - use the standard animation system
             applyGravityDirectionChange(
@@ -1280,12 +1440,8 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 currentRotationParameters, false
             );
             prevGravityDirection = currGravityDirection;
-            // The cardinal animation targets the nearest cardinal; if the real gravity is
-            // non-cardinal (ship), retarget from the in-flight rotation to the true
-            // direction so rendering never snaps when the cardinal animation finishes.
-            // Skip when the arbitrary vector coincides with the cardinal (axis-aligned
-            // ship): the end rotation is identical and retargeting would only cut the
-            // full-length animation down to the short retarget duration.
+            // Non-cardinal gravity: retarget the cardinal animation to the true direction (unless they
+            // coincide, where it would only shorten the animation)
             if (entity.level().isClientSide() && animation != null
                     && arbitraryGravityDirection != null && !arbitraryGravityDirection.isCardinal()
                     && arbitraryGravityDirection.getVector().distanceToSqr(
@@ -1301,8 +1457,7 @@ public class GravityCapabilityImpl implements IGravityCapability {
                 );
             }
         } else if (leavingArbitraryGravity) {
-            // Transitioning from arbitrary gravity back to normal/cardinal gravity
-            // Apply a gravity change to reset the player orientation
+            // Back from arbitrary gravity to cardinal
             Direction targetDir = currGravityDirection;
             Direction sourceDir = prevArbitraryGravityDirection.getNearestDirection();
             if (sourceDir != targetDir) {
@@ -1311,12 +1466,10 @@ public class GravityCapabilityImpl implements IGravityCapability {
                     currentRotationParameters, false
                 );
             }
-            // NOTE: Do NOT update bounding box here - for VS ships returning to normal,
-            // the hitbox was never changed in the first place
+            // The ship hitbox was never transformed
             entity.fallDistance = 0;
         } else if (arbitraryChanged && arbitraryGravityDirection != null) {
-            // Only the arbitrary direction changed (ship is rotating within the same cardinal direction)
-            // Apply smooth arbitrary gravity change without full position adjustment
+            // Only the arbitrary direction changed (within the same cardinal)
             applyArbitraryGravityChange();
         }
         
@@ -1339,33 +1492,24 @@ public class GravityCapabilityImpl implements IGravityCapability {
         return curr.distanceToSqr(prev) > 0.0001;
     }
 
-    /**
-     * Apply smooth arbitrary gravity changes for VS ship rotation.
-     * This handles the case where the ship rotates but stays within the same cardinal direction.
-     */
+    /** Smooth arbitrary gravity change (a VS ship rotating within the same cardinal). */
     private void applyArbitraryGravityChange() {
         if (!canChangeGravity() || arbitraryGravityDirection == null) {
             return;
         }
 
-        // NOTE: Do NOT update bounding box for arbitrary gravity changes!
-        // For VS ships, the hitbox stays world-aligned - only the camera and movement direction change.
-        // Updating the bounding box causes hitbox size/offset issues.
+        // No bounding box update: on VS ships the hitbox stays world-aligned
 
-        // Reset fall distance to prevent fall damage during smooth rotation
         entity.fallDistance = 0;
 
-        // For smooth arbitrary gravity, we need to adjust velocity to match the new gravity frame
-        // BUT: use cardinal directions for velocity transformation since physics uses cardinal
         if (prevArbitraryGravityDirection != null && !prevArbitraryGravityDirection.equals(arbitraryGravityDirection)) {
             Direction prevNearest = prevArbitraryGravityDirection.getNearestDirection();
             Direction currNearest = arbitraryGravityDirection.getNearestDirection();
 
-            // Only transform velocity if the cardinal direction changed
+            // Re-frame velocity only when the nearest cardinal changed
             if (prevNearest != currNearest) {
                 Vec3 currentVelocity = entity.getDeltaMovement();
 
-                // Transform velocity from old gravity frame to world, then to new gravity frame
                 Vec3 worldVelocity = RotationUtil.vecPlayerToWorld(currentVelocity, prevNearest);
                 Vec3 newFrameVelocity = RotationUtil.vecWorldToPlayer(worldVelocity, currNearest);
 
@@ -1385,6 +1529,89 @@ public class GravityCapabilityImpl implements IGravityCapability {
         }
     }
 
+    /** Below this cosine (about 30°) a ship-frame change is a face change, not drift. */
+    private static final double SHIP_FACE_CHANGE_DOT = 0.87;
+
+    /**
+     * A change between two ship-anchored directions, whose frames are locked to the ship (see
+     * {@link GravityDirection#shipAnchored}): upstream's flip, done once in the ship's frame.
+     * Pivot about the feet (the hitbox centre for 180° or a free-fall landing), turn velocity and
+     * view with gravity (a free-fall landing keeps world momentum), one animation.
+     * Small changes only re-express velocity and animate.
+     */
+    private void applyShipFrameChange(GravityDirection from, GravityDirection to, RotationParameters parameters) {
+        if (!canChangeGravity()) {
+            return;
+        }
+        entity.fallDistance = 0;
+        double dot = from.getVector().dot(to.getVector());
+        long timeMs = entity.level().getGameTime() * 50;
+        if (dot >= SHIP_FACE_CHANGE_DOT) {
+            entity.setDeltaMovement(to.vecWorldToPlayer(from.vecPlayerToWorld(entity.getDeltaMovement())));
+            if (entity.level().isClientSide() && animation != null) {
+                animation.startArbitraryRotationAnimation(to, from, parameters.rotationTimeMS(), entity, timeMs);
+            }
+            return;
+        }
+        lastGravityChangeGameTime = entity.level().getGameTime();
+
+        boolean opposite = dot < -0.999;
+        Vec3 relativeRotationCenter = airborneFlip || opposite
+            ? new Vec3(0, entity.getDimensions(entity.getPose()).height / 2, 0)
+            : Vec3.ZERO;
+        if (!relativeRotationCenter.equals(Vec3.ZERO)) {
+            Vec3 rotationCenter = entity.position().add(from.vecPlayerToWorld(relativeRotationCenter));
+            Vec3 posTranslation = rotationCenter.subtract(to.vecPlayerToWorld(relativeRotationCenter))
+                .subtract(entity.position());
+            entity.setPos(entity.position().add(posTranslation));
+            entity.xo += posTranslation.x;
+            entity.yo += posTranslation.y;
+            entity.zo += posTranslation.z;
+            entity.xOld += posTranslation.x;
+            entity.yOld += posTranslation.y;
+            entity.zOld += posTranslation.z;
+        }
+
+        // Old down onto new; 180°: about the entity's left-right axis
+        Quaternionf turn = opposite
+            ? new Quaternionf().fromAxisAngleRad(from.vecPlayerToWorld(new Vec3(1, 0, 0)).toVector3f(), (float) Math.PI)
+            : QuaternionUtil.getRotationBetween(from.getVector(), to.getVector());
+
+        // deltaMovement is ship-relative (the dragger carries the ship's motion), in the gravity frame
+        Vec3 worldVelocity = from.vecPlayerToWorld(entity.getDeltaMovement());
+        if (!airborneFlip && parameters.rotateVelocity()) {
+            worldVelocity = QuaternionUtil.rotate(worldVelocity, turn);
+        }
+        entity.setDeltaMovement(to.vecWorldToPlayer(worldVelocity));
+
+        Quaternionf oldView = QuaternionUtil.getViewRotation(entity.getXRot(), entity.getYRot());
+        Vec3 look = from.vecPlayerToWorld(RotationUtil.rotToVec(entity.getYRot(), entity.getXRot()));
+        if (parameters.rotateView()) {
+            look = opposite ? look.scale(-1) : QuaternionUtil.rotate(look, turn);
+        }
+        Vec2 yawPitch = RotationUtil.vecToRot(to.vecWorldToPlayer(look));
+        float deltaYaw = Mth.wrapDegrees(yawPitch.x - entity.getYRot());
+        float deltaPitch = yawPitch.y - entity.getXRot();
+        entity.setYRot(entity.getYRot() + deltaYaw);
+        entity.setXRot(entity.getXRot() + deltaPitch);
+        entity.yRotO += deltaYaw;
+        entity.xRotO += deltaPitch;
+        if (entity instanceof LivingEntity living) {
+            living.yBodyRot += deltaYaw;
+            living.yBodyRotO += deltaYaw;
+            living.yHeadRot += deltaYaw;
+            living.yHeadRotO += deltaYaw;
+        }
+
+        if (!entity.level().isClientSide()) {
+            // The client folds the tilt into its flip animation; the server just drops it
+            consumeVisualTilt();
+        } else if (animation != null) {
+            animation.startShipFaceAnimation(to, from, oldView, parameters.rotationTimeMS(), entity, timeMs,
+                relativeRotationCenter);
+        }
+    }
+
     /**
      * Not needed in normal cases.
      * Only used in {@link GravityChangerAPI#instantlySetClientBaseGravityDirection(Entity, Direction)}
@@ -1393,6 +1620,35 @@ public class GravityCapabilityImpl implements IGravityCapability {
     public void forceApplyGravityChange() {
         prevGravityDirection = currGravityDirection;
         prevGravityStrength = currGravityStrength;
+        prevArbitraryGravityDirection = arbitraryGravityDirection;
+        // Rebuild the hitbox for the new frame, without the flip
+        applyGravityDirectionChange(currGravityDirection, currGravityDirection, currentRotationParameters, true);
+    }
+
+    /**
+     * Resolve the effects applied so far this tick right away and take the result as the
+     * current frame, with no flip (no pivot, push-out or animation): for an entity that is just
+     * spawning, so it appears already standing in its field. Server only.
+     */
+    public void settleNow() {
+        if (entity.level().isClientSide() || !canChangeGravity()) {
+            return;
+        }
+        updateGravityStatus(false);
+        reanchorArbitraryToShipRotation();
+        forceApplyGravityChange();
+        consumeVisualTilt();
+        needsSync = true;
+    }
+
+    /** Send the full gravity state to one player, applied there without animation (they just started tracking this entity). */
+    public void sendStateTo(net.minecraft.server.level.ServerPlayer player) {
+        if (entity.level().isClientSide()) {
+            return;
+        }
+        GravityNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+            new UpdateGravityCapabilityPacket(true, entity.getUUID(), baseGravityDirection, currGravityDirection,
+                baseGravityStrength, currGravityStrength, arbitraryGravityDirection, isCameraOnlyGravity));
     }
     
     private static record GravityDirEffect(

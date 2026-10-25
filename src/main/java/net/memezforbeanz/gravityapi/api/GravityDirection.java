@@ -4,18 +4,15 @@ import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix3f;
+import org.joml.Quaterniond;
 import org.joml.Quaternionf;
+import org.joml.Vector3d;
 import org.joml.Vector3f;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.ref.WeakReference;
 
-/**
- * Represents a gravity direction that can be either a cardinal Direction
- * or an arbitrary Vec3 vector for smooth ship-relative gravity.
- * 
- * This allows the gravity system to support any angle, not just the 6 cardinal directions.
- */
+/** A gravity direction: a cardinal Direction or an arbitrary vector (ship-relative gravity). */
 public class GravityDirection {
     
     /**
@@ -28,10 +25,7 @@ public class GravityDirection {
     public static final GravityDirection EAST = new GravityDirection(Direction.EAST);
     public static final GravityDirection WEST = new GravityDirection(Direction.WEST);
     
-    /**
-     * The gravity vector (normalized, points in direction of gravity pull)
-     * For DOWN, this is (0, -1, 0)
-     */
+    /** The gravity vector (normalized, pointing the way gravity pulls); (0, -1, 0) for DOWN */
     private final Vec3 vector;
     
     /**
@@ -45,11 +39,9 @@ public class GravityDirection {
     private final boolean isCardinal;
     
     /**
-     * Ship anchor (transient, never serialized or synced): the VS2 ship this direction is
-     * fixed to and the direction in that ship's own frame. Ship-relative gravity rides the
-     * ship — physics re-resolves the world vector from the ship's current transform each
-     * tick and rendering from its interpolated render transform each frame, instead of
-     * chasing a world-space snapshot that lags a moving or spinning ship.
+     * Ship anchor (never serialized or synced): the VS2 ship this direction is fixed to and the
+     * direction in the ship's frame, so it is re-resolved from the ship's transform instead of
+     * lagging a moving ship as a world snapshot.
      */
     @Nullable
     private WeakReference<Object> anchorShip;
@@ -86,20 +78,16 @@ public class GravityDirection {
             (float) this.vector.y,
             (float) this.vector.z
         );
-        // Check if this is close enough to a cardinal to be considered cardinal
         Vec3 cardinalVec = Vec3.atLowerCornerOf(nearestDirection.getNormal());
         boolean vectorIsCardinal = this.vector.distanceToSqr(cardinalVec) < 0.001;
         this.isCardinal = vectorIsCardinal && !forceArbitrary;
-        // The quaternion basis must follow the vector, not the physics routing flag:
-        // an exactly-cardinal ship-relative direction still needs RotationUtil's bases.
+        // The quaternion basis follows the vector: an axis-aligned ship-relative direction still uses the cardinal bases
         computeQuaternions(vectorIsCardinal);
     }
 
     /**
-     * Create a ship-relative gravity direction: never treated as cardinal even when the
-     * vector happens to be axis-aligned (a parked, unrotated ship). Cardinal routing would
-     * hand the entity to the world-space cardinal collision mixins, which cannot see ship
-     * blocks; this marker keeps it in the ship gravity physics pipeline.
+     * A ship-relative direction: never cardinal, even when axis-aligned (a parked ship), so it stays
+     * in the ship physics pipeline (the cardinal collision mixins can't see ship blocks).
      */
     public static GravityDirection shipRelative(Vec3 vector) {
         if (vector == null) {
@@ -109,15 +97,35 @@ public class GravityDirection {
     }
     
     /**
-     * A ship-relative direction anchored to a VS2 ship: {@code worldVector} is its current
-     * world-space form, {@code shipLocal} the same direction in the ship's frame.
+     * A ship-relative direction anchored to a VS2 ship: {@code shipLocal} in the ship's frame,
+     * {@code shipToWorld} the ship's current rotation. Its player frame is locked to the ship (the
+     * ship-space basis of {@code shipLocal}, cardinal for a face), so the facing turns with the ship.
      */
-    public static GravityDirection shipAnchored(Vec3 worldVector, Object ship, long shipId, Vec3 shipLocal) {
-        GravityDirection direction = new GravityDirection(worldVector, true);
+    public static GravityDirection shipAnchored(Quaterniond shipToWorld, Object ship, long shipId, Vec3 shipLocal) {
+        Vec3 local = snapToFace(shipLocal.normalize());
+        Vector3d world = shipToWorld.transform(new Vector3d(local.x, local.y, local.z));
+        GravityDirection direction = new GravityDirection(new Vec3(world.x, world.y, world.z), true);
         direction.anchorShip = new WeakReference<>(ship);
         direction.anchorShipId = shipId;
-        direction.shipLocalVector = shipLocal.normalize();
+        direction.shipLocalVector = local;
+        direction.rotationQuaternion = shipLockedWorldToPlayer(local, shipToWorld);
+        direction.inverseRotationQuaternion = new Quaternionf(direction.rotationQuaternion).conjugate();
         return direction;
+    }
+
+    /** World-to-player rotation of a ship-local direction under the ship rotation {@code shipToWorld}. */
+    public static Quaternionf shipLockedWorldToPlayer(Vec3 shipLocal, Quaterniond shipToWorld) {
+        Quaternionf shipToPlayer = new GravityDirection(shipLocal, false).getWorldToPlayerRotation();
+        Quaternionf worldToShip = new Quaternionf((float) shipToWorld.x, (float) shipToWorld.y,
+                (float) shipToWorld.z, (float) shipToWorld.w).conjugate();
+        return shipToPlayer.mul(worldToShip);
+    }
+
+    /** Snap a direction within round-off of a block face to that face. */
+    private static Vec3 snapToFace(Vec3 v) {
+        Direction nearest = Direction.getNearest(v.x, v.y, v.z);
+        Vec3 face = Vec3.atLowerCornerOf(nearest.getNormal());
+        return v.distanceToSqr(face) < 1.0E-3 ? face : v;
     }
 
     /** Whether this direction is fixed to a ship's frame (see {@link #shipAnchored}). */
@@ -131,25 +139,27 @@ public class GravityDirection {
         return anchorShip != null ? anchorShip.get() : null;
     }
 
+    /** The anchoring ship's id (meaningful only when {@link #isShipAnchored()}). */
+    public long getAnchorShipId() {
+        return anchorShipId;
+    }
+
     /** The direction in the anchoring ship's frame, or null if unanchored. */
     @Nullable
     public Vec3 getShipLocalVector() {
         return shipLocalVector;
     }
 
-    /** The same ship anchor with a freshly resolved world vector. */
-    public GravityDirection withWorldVector(Vec3 worldVector) {
+    /** The same ship anchor under the ship's current rotation; as is if the ship is gone. */
+    public GravityDirection withShipRotation(Quaterniond shipToWorld) {
         Object ship = getAnchorShip();
         if (shipLocalVector == null || ship == null) {
-            return shipRelative(worldVector);
+            return this;
         }
-        return shipAnchored(worldVector, ship, anchorShipId, shipLocalVector);
+        return shipAnchored(shipToWorld, ship, anchorShipId, shipLocalVector);
     }
 
-    /**
-     * Whether both directions point the same way in the same ship's frame — any difference
-     * between their world vectors is then purely the ship moving, not a gravity change.
-     */
+    /** Whether both point the same way in the same ship's frame (any world difference is the ship moving). */
     public boolean isSameShipFrameAs(@Nullable GravityDirection other) {
         return other != null && shipLocalVector != null && other.shipLocalVector != null
                 && anchorShipId == other.anchorShipId
@@ -188,25 +198,15 @@ public class GravityDirection {
     }
     
     /**
-     * Compute the rotation quaternions for this gravity direction.
-     *
-     * The rotation transforms coordinates between world space and player space:
-     * - In player space, gravity always points down (0, -1, 0)
-     * - In world space, gravity points in the direction of this.vector
-     *
-     * playerToWorldRotation: rotates (0, -1, 0) to this.vector
-     * worldToPlayerRotation: rotates this.vector to (0, -1, 0)
+     * Compute the world/player rotations: player space has gravity at (0, -1, 0), world space at
+     * {@code vector}.
      */
     private void computeQuaternions(boolean useCardinalBases) {
         Vec3 defaultDown = new Vec3(0, -1, 0);
 
         if (useCardinalBases) {
-            // Cardinal directions must use the exact same bases as RotationUtil's
-            // vecWorldToPlayer/vecPlayerToWorld switch tables. The generic axis-angle
-            // path below picks the minimal rotation, whose roll about the gravity axis
-            // matches RotationUtil only for some directions (NORTH yes, EAST/WEST no).
-            // Any consumer mixing the two frames (movement uses RotationUtil, the ship
-            // collision pipeline uses these quaternions) would disagree per axis.
+            // Cardinal directions use the same bases as RotationUtil's switch tables (the shortest
+            // rotation differs in roll for some), so movement and the ship pipeline agree per axis
             this.rotationQuaternion = cardinalWorldToPlayer(this.nearestDirection);
             this.inverseRotationQuaternion = new Quaternionf(rotationQuaternion).conjugate();
         } else if (this.vector.distanceToSqr(defaultDown) < 0.0001) {
@@ -214,39 +214,27 @@ public class GravityDirection {
             this.rotationQuaternion = new Quaternionf();
             this.inverseRotationQuaternion = new Quaternionf();
         } else if (this.vector.distanceToSqr(new Vec3(0, 1, 0)) < 0.0001) {
-            // Pointing up (opposite of down), rotate 180 around Z
-            // This rotation takes (0, -1, 0) to (0, 1, 0)
+            // Up: 180° about Z
             Quaternionf playerToWorld = new Quaternionf().fromAxisAngleDeg(0, 0, 1, 180);
             this.inverseRotationQuaternion = playerToWorld;
             this.rotationQuaternion = new Quaternionf(playerToWorld).conjugate();
         } else {
-            // General case: find rotation from (0, -1, 0) to this.vector
-            // This is the playerToWorld rotation
+            // General case: the shortest rotation from (0, -1, 0) to the vector
             Vec3 axis = defaultDown.cross(this.vector).normalize();
             double dot = defaultDown.dot(this.vector);
             double angle = Math.acos(Math.max(-1, Math.min(1, dot)));
             
-            // playerToWorld: rotates default down to actual gravity direction
             Quaternionf playerToWorld = new Quaternionf().fromAxisAngleRad(
                 (float) axis.x, (float) axis.y, (float) axis.z, (float) angle
             );
             this.inverseRotationQuaternion = playerToWorld;
             this.rotationQuaternion = new Quaternionf(playerToWorld).conjugate();
         }
-
-        // Debug: verify the quaternions work correctly
-        // Apply worldToPlayer to the gravity vector - should give (0, -1, 0)
-        Vector3f testVec = new Vector3f((float) this.vector.x, (float) this.vector.y, (float) this.vector.z);
-        testVec.rotate(this.rotationQuaternion);
-        // testVec should now be approximately (0, -1, 0)
     }
 
     /**
-     * World-to-player rotation for a cardinal gravity direction, matching
-     * {@code RotationUtil.vecWorldToPlayer} exactly. Each matrix column is the image of a
-     * world basis vector under that switch table (duplicated here rather than referenced
-     * to avoid a class-initialization cycle: RotationUtil's static tables are built from
-     * these constants).
+     * World-to-player rotation for a cardinal direction, matching {@code RotationUtil.vecWorldToPlayer}.
+     * Duplicated rather than referenced to avoid a class-initialization cycle.
      */
     private static Quaternionf cardinalWorldToPlayer(Direction direction) {
         return switch (direction) {
@@ -382,8 +370,7 @@ public class GravityDirection {
             return DOWN;
         }
 
-        // The tag said non-cardinal: preserve that through round-trips. Re-detecting would
-        // snap an exactly-axis-aligned ship-relative direction back to cardinal.
+        // Preserve non-cardinal through round-trips (an axis-aligned ship-relative direction)
         return shipRelative(new Vec3(x, y, z));
     }
     
@@ -409,7 +396,13 @@ public class GravityDirection {
     public boolean equals(Object obj) {
         if (this == obj) return true;
         if (!(obj instanceof GravityDirection other)) return false;
-        return this.vector.distanceToSqr(other.vector) < 0.0001;
+        // The whole frame, not just the down vector: a ship face pointing world-down but turned
+        // about it (a planetoid spun round its vertical axis) must not pass for plain DOWN, or
+        // every "normal gravity" shortcut skips its frame conversion
+        Quaternionf a = this.rotationQuaternion;
+        Quaternionf b = other.rotationQuaternion;
+        return this.vector.distanceToSqr(other.vector) < 0.0001
+                && Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w) > 0.99999f;
     }
     
     @Override

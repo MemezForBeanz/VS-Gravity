@@ -14,6 +14,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Quaternionf;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 
@@ -30,10 +31,7 @@ public abstract class GravityChangerAPI {
         return comp.getCurrGravityDirection();
     }
     
-    /**
-     * Returns the applied gravity direction for the given entity.
-     * This version supports arbitrary angles (for VS ship rotation compatibility).
-     */
+    /** The applied gravity direction, including arbitrary (VS ship) angles. */
     public static GravityDirection getGravityDirectionVec(Entity entity) {
         GravityCapabilityImpl comp = getGravityComponentEarly(entity);
         if (comp == null) {
@@ -43,33 +41,34 @@ public abstract class GravityChangerAPI {
         return comp.getCurrentGravityDirection();
     }
 
-    /**
-     * Check if the entity's gravity is from an arbitrary (non-cardinal) source like VS ships.
-     * When true, hitbox should NOT be transformed (only camera rotates).
-     */
+    /** Whether the entity's gravity is arbitrary (VS ship); the hitbox is then not transformed, only the camera rotates. */
     public static boolean isArbitraryGravity(Entity entity) {
-        // Check the capability flag first: it's a plain field read, while the ship check below
-        // costs a VS2 ship-intersection query (per-tick cached, but still the expensive half).
+        // The capability flag first: the ship check is a VS2 query
         GravityCapabilityImpl comp = getGravityComponentEarly(entity);
         if (comp != null && comp.isArbitraryGravity()) {
             return true;
         }
 
-        // Entities on a VS ship are always arbitrary - this is the most reliable check
-        // and should always prevent hitbox transformation for entities on ships
+        // Entities on a VS ship are always arbitrary
         return VS2Integration.isVS2Loaded() && VS2Integration.isOnShip(entity);
     }
 
     /**
-     * STRICT check for the collision pipeline: true only when ship-relative gravity physics is
-     * actually active for this entity (gravity generator field / camera-only ship gravity /
-     * synced arbitrary direction). Unlike {@link #isArbitraryGravity(Entity)}, this does NOT
-     * treat mere proximity to a VS ship as arbitrary, so normal-gravity entities bumping into a
-     * ship keep VS2's stock collision instead of our ship-local pipeline.
+     * Strict check for the collision pipeline: ship-relative gravity physics is active. Unlike
+     * {@link #isArbitraryGravity(Entity)}, proximity to a ship doesn't count, so normal-gravity
+     * entities touching a ship keep VS2's collision.
      */
     public static boolean isShipGravityPhysics(Entity entity) {
         GravityCapabilityImpl comp = getGravityComponentEarly(entity);
         return comp != null && comp.isShipGravityPhysics();
+    }
+
+    /** Add the entity's pending field free-fall acceleration (from travel). */
+    public static void applyFreeFallAcceleration(Entity entity) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        if (comp != null) {
+            comp.applyFreeFallAcceleration();
+        }
     }
 
     public static double getGravityStrength(Entity entity) {
@@ -88,10 +87,56 @@ public abstract class GravityChangerAPI {
         }
     }
 
+    /**
+     * Apply a gravity field's pull for this tick (see
+     * {@link GravityCapabilityImpl#applyFieldGravityEffect}).
+     *
+     * @param landingFace world-space face to stand on (null: {@code pull}'s nearest)
+     * @param nearSurface the field found that face close ahead or underfoot
+     */
+    public static void applyFieldGravityEffect(Entity entity, Vec3 pull, @Nullable Vec3 landingFace,
+                                               boolean nearSurface, double priority) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        if (comp != null) {
+            comp.applyFieldGravityEffect(pull, landingFace, nearSurface, false, RotationParameters.getDefault(), priority);
+        }
+    }
+
+    /** {@link #applyFieldGravityEffect} for a field on a VS ship: faces are ship-relative. */
+    public static void applyShipFieldGravityEffect(Entity entity, Vec3 pull, @Nullable Vec3 landingFace,
+                                                   boolean nearSurface, double priority) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        if (comp != null) {
+            comp.applyFieldGravityEffect(pull, landingFace, nearSurface, true, RotationParameters.getDefault(), priority);
+        }
+    }
+
+    /** A field free fall's tilt (render, view vector, movement input) as a player-frame rotation ({@code worldToPlayer' = tilt^-1 * worldToPlayer}), or null. */
+    public static @Nullable Quaternionf getVisualTilt(Entity entity, float partialTick) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        return comp != null ? comp.getVisualTilt(partialTick) : null;
+    }
+
+    /** Hand the current visual tilt to a starting rotation animation (clears it). */
+    public static @Nullable Quaternionf consumeVisualTilt(Entity entity) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        return comp != null ? comp.consumeVisualTilt() : null;
+    }
+
     /** Whether a gravity strength override (e.g. a gravity generator's target gravity) holds. */
     public static boolean isGravityStrengthOverridden(Entity entity) {
         GravityCapabilityImpl comp = getGravityComponentEarly(entity);
         return comp != null && comp.isStrengthOverridden();
+    }
+
+    /**
+     * Whether planet mods (Ad Astra, Cosmic Horizons) must not add their gravity: a strength
+     * override holds, or a projectile is inside a gravity field (which is its only gravity).
+     */
+    public static boolean isPlanetGravitySuppressed(Entity entity) {
+        return isGravityStrengthOverridden(entity)
+                || (entity instanceof net.minecraft.world.entity.projectile.Projectile
+                    && GravityFields.fieldAcceleration(entity.level(), entity.position()) != null);
     }
 
     public static double getBaseGravityStrength(Entity entity) {
@@ -148,16 +193,26 @@ public abstract class GravityChangerAPI {
         component.forceApplyGravityChange();
     }
     
+    /**
+     * Take the gravity effects applied to {@code entity} so far this tick as its frame right now,
+     * with no flip or animation: call after applying a field's effect to a just-spawned entity so
+     * it spawns already standing in the field (server only).
+     */
+    public static void settleGravityNow(Entity entity) {
+        GravityCapabilityImpl comp = getGravityComponentEarly(entity);
+        if (comp != null) {
+            comp.settleNow();
+        }
+    }
+
     public static GravityCapabilityImpl getGravityComponent(Entity entity) {
         GravityCapabilityImpl cap = getGravityComponentEarly(entity);
-        // Fresh throwaway impl only when the capability is genuinely absent - callers may mutate
-        // the returned component, so a shared fallback instance would leak state across entities.
+        // A fresh impl only when the capability is absent: callers may mutate it
         return cap != null ? cap : new GravityCapabilityImpl();
     }
 
     public static @Nullable GravityCapabilityImpl getGravityComponentEarly(Entity entity) {
-        // orElse(new ...) is evaluated eagerly in Java, so the old delegation allocated a
-        // GravityCapabilityImpl on every gravity lookup - this is the hottest call in the mod.
+        // Not orElse(new ...), which allocates on every lookup
         return (GravityCapabilityImpl) entity.getCapability(GravityCapabilities.GRAVITY).resolve().orElse(null);
     }
     
@@ -192,18 +247,10 @@ public abstract class GravityChangerAPI {
     }
 
     /**
-     * The region of the entity a gravity field/plate must touch to claim it
-     * (AmethystGravity's detection collider). The raw bounding box is unusable for this:
-     * it is re-anchored at the feet on every cardinal gravity change, so at a field
-     * boundary the box swings out of the field the moment the field claims the entity
-     * and membership oscillates. This collider is a box spanning the entity's feet, one
-     * entity-width tall, oriented by the entity's CURRENT gravity frame — the feet stay
-     * fixed through 90° flips, so membership is stable through the transition.
-     * <p>
-     * When the effect pulls opposite to the current gravity ({@code effectWorldDir}
-     * within ~25° of straight "up", e.g. a ceiling plate overhead), the full hitbox is
-     * returned so head contact counts. On ships the physics hitbox stays world-aligned
-     * and the full box is the honest representation.
+     * The region of the entity a gravity field or plate must touch to claim it: a box at the feet,
+     * one entity-width tall, in the current gravity frame. The raw bounding box re-anchors on every
+     * flip and would swing out of the field at its boundary. When the effect pulls opposite the
+     * current gravity (a ceiling plate), or on a ship, the full hitbox is returned.
      */
     public static AABB getGravityEffectCollider(
         Entity entity, @Nullable Vec3 effectWorldDir, boolean onShip

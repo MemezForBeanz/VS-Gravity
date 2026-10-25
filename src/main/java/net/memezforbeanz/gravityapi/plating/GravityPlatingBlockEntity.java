@@ -245,17 +245,11 @@ public class GravityPlatingBlockEntity extends BlockEntity {
 
         be.refreshCache();
 
-        // On a VS ship, this block entity ticks at shipyard coordinates while the entities it
-        // should affect exist at world coordinates: queries and geometry tests must be swept
-        // between the two frames, and the applied direction must be the plate normal rotated
-        // into the world frame.
+        // On a VS ship this ticks at shipyard coordinates while entities are in world space: sweep between the two
         boolean onShip = VS2Integration.isVS2Loaded() && VS2Helper.isBlockOnShip(world, blockPos);
 
-        // AmethystGravity-reattracted model: plates only nominate candidates; the entity's
-        // gravity capability resolves them once per tick with hysteresis. Detection is
-        // box-vs-box - the plate's effect box against a collider spanning the entity's feet
-        // in its current gravity frame - which keeps registration stable while standing on
-        // walls and through rotation animations (a feet-point test drifts out of range).
+        // Plates only nominate candidates; the entity's capability picks one per tick with hysteresis.
+        // Detection is box vs box (see getGravityEffectCollider).
         for (Direction plateDir : Direction.values()) {
             SideData sideDatum = be.sideData[plateDir.ordinal()];
             if (sideDatum == null) {
@@ -290,10 +284,7 @@ public class GravityPlatingBlockEntity extends BlockEntity {
             );
 
             for (Entity entity : entities) {
-                // Players are client-authoritative for plating: the local client detects
-                // and reports its choice (UpdatePlatingGravityPacket); the server injects
-                // the verified report instead of detecting on its stale view of the player.
-                // Remote players on the client are sync-driven.
+                // Players are client-authoritative for plating: the server uses their verified report
                 if (entity instanceof Player) {
                     if (!world.isClientSide() || !GCUtil.isClientPlayer(entity)) {
                         continue;
@@ -332,7 +323,7 @@ public class GravityPlatingBlockEntity extends BlockEntity {
         return GravityChangerAPI.getGravityEffectCollider(entity, effectWorldDir, onShip);
     }
     
-    // when approaching an inward corner, do auto-jump to make it smoothly go forward
+    // Approaching an inward corner: auto-jump to go on smoothly
     private static void tryToDoCornerAutoJump(
         BlockState blockState, BlockPos blockPos,
         Entity entity, GravityCapabilityImpl comp
@@ -341,7 +332,7 @@ public class GravityPlatingBlockEntity extends BlockEntity {
             return;
         }
         
-        // apply levitation when the entity is close to corner
+        // Levitate near the corner
         Direction entityGravityDir = comp.getCurrGravityDirection();
         
         for (Direction plateDir : Direction.values()) {

@@ -45,6 +45,7 @@ public class GravityAPI
 		}
 
 		ctx.registerConfig(Type.COMMON, GravityConfig.CONFIG_SPEC, "gravity-api.toml");
+		ctx.registerConfig(Type.SERVER, net.memezforbeanz.gravityapi.config.GravityServerConfig.CONFIG_SPEC, "gravity-api-server.toml");
 		// Planet gravity compat: strength overrides replace Ad Astra's planet gravity
 		// (Cosmic Horizons is handled by CosmosGravityProcedureMixin)
 		if (ModList.get().isLoaded("ad_astra")) {

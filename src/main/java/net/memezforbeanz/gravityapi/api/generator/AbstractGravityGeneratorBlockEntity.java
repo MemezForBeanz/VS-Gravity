@@ -19,21 +19,14 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Base class for gravity generator block entities.
+ * Base class for gravity generator block entities (with {@link AbstractGravityGeneratorBlock}).
+ * Handles registration with the {@link GravityGeneratorRegistry} on both sides, VS2 ship
+ * detection and transforms (reflection-based, VS2 optional), and a field direction that follows
+ * the ship's down on a ship.
  * <p>
- * Extend this (together with {@link AbstractGravityGeneratorBlock}) to create a block that
- * projects a gravitational field. The base class handles:
- * <ul>
- *   <li>Registration with the {@link GravityGeneratorRegistry} on both logical sides
- *       (client-side registration is required for smooth local-player prediction)</li>
- *   <li>Valkyrien Skies ship detection and ship-space &rarr; world-space transforms
- *       (all VS2 access is reflection-based, so this works without VS2 installed)</li>
- *   <li>Computing the field's gravity direction, which follows the ship's "down"
- *       when the generator is mounted on a ship</li>
- * </ul>
- * Subclasses customize behavior by overriding {@link #getFieldRadius()},
- * {@link #getGravityPriority()}, {@link #getRotationParameters()},
- * {@link #getBaseGravityDirection()}, {@link #isInField(Entity)} and {@link #canAffect(Entity)}.
+ * Customize through {@link #getFieldRadius()}, {@link #getGravityPriority()},
+ * {@link #getRotationParameters()}, {@link #getBaseGravityDirection()}, {@link #isInField(Entity)}
+ * and {@link #canAffect(Entity)}.
  */
 public abstract class AbstractGravityGeneratorBlockEntity extends BlockEntity {
 
@@ -116,18 +109,9 @@ public abstract class AbstractGravityGeneratorBlockEntity extends BlockEntity {
     }
 
     /**
-     * The gravity direction this generator projects, expressed in the generator's
-     * <em>local frame</em>:
-     * <ul>
-     *   <li>On a Valkyrien Skies ship this is ship-local — e.g. {@link GravityDirection#DOWN}
-     *       means "the ship's down", and follows the ship as it rotates.</li>
-     *   <li>Off-ship (or without VS2 installed) it is used as-is in world space, so the
-     *       generator works exactly the same way in a normal world.</li>
-     * </ul>
-     * Override this to project gravity in any direction, including arbitrary non-cardinal
-     * vectors. Returning {@code null} skips applying the field this tick.
-     * <p>
-     * The default is {@link GravityDirection#DOWN}.
+     * The gravity direction this generator projects, in its local frame: ship-local on a VS ship
+     * ({@link GravityDirection#DOWN} is the ship's down), world space otherwise. Any vector works;
+     * {@code null} skips the field this tick. Default {@link GravityDirection#DOWN}.
      */
     @Nullable
     public GravityDirection getBaseGravityDirection() {
@@ -135,18 +119,10 @@ public abstract class AbstractGravityGeneratorBlockEntity extends BlockEntity {
     }
 
     /**
-     * Compute the gravity direction this generator applies, in world space.
-     * <p>
-     * The default implementation takes {@link #getBaseGravityDirection()} and, when the
-     * generator is on a Valkyrien Skies ship, transforms it from ship space to world space
-     * (supporting arbitrary, non-cardinal angles). Off-ship the base direction is already
-     * world space and is returned unchanged.
-     * <p>
-     * Most subclasses should override {@link #getBaseGravityDirection()} instead; only
-     * override this to bypass the ship transform entirely (e.g. gravity that always points
-     * at a fixed world-space target).
+     * The field's gravity direction in world space: {@link #getBaseGravityDirection()} carried
+     * through the ship transform on a ship. Override only to bypass the ship transform.
      *
-     * @return the gravity direction, or {@code null} to skip applying the field this tick
+     * @return the direction, or {@code null} to skip the field this tick
      */
     @Nullable
     public GravityDirection computeGravityDirection() {

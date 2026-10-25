@@ -6,11 +6,18 @@
 	"compatibilityLevel": "JAVA_17",
 	"mixins": [
 		"AbstractArrowMixin",
+		"AbstractHurtingProjectileMixin",
 		"AbstractHorseMixin",
 		"AbstractMinecartMixin",
 		"AbstractSkeletonMixin",
 		"AreaEffectCloudMixin",
 		"BegGoalMixin",
+		"BodyRotationControlMixin",
+		"BlockItemMixin",
+		"PlacementPlayerMixin",
+		"PlacementLivingEntityMixin",
+		"StandingAndWallBlockItemMixin",
+		"StairBlockAccessor",
 		"CrossbowItemMixin",
 		"DirectionMixin",
 		"DrownedMixin",
@@ -47,6 +54,7 @@
 		"ShulkerMixin",
 		"SnowGolemMixin",
 		"ThrowablePotionItemMixin",
+		"ThrowableProjectileAccessor",
 		"ThrowableProjectileMixin",
 		"ThrownExperienceBottleMixin",
 		"ThrownPotionMixin",
@@ -59,9 +67,18 @@
 		"forge.MixinForgeHooks",
 		"compat.ACEntityMixin",
 		"compat.CosmosGravityProcedureMixin",
+		"compat.MutantEndermanMixin",
 		"compat.VS2EntityShipCollisionUtilsMixin",
 		"compat.VS2EntityDraggerMixin",
-		"MixinServerLevel"
+		"MixinServerLevel",
+		"rotation.RotationChunkMixin",
+		"rotation.RotationSnapshotMixin",
+		"rotation.RotationPathRegionMixin",
+		"rotation.RotationStateMixin",
+		"rotation.RotationBlockCullingMixin",
+		"rotation.RotationLevelMixin",
+		"rotation.VS2RotationRelocationMixin",
+		"rotation.RotationLightMixin"
 	],
 	"client": [
 		"client.CameraMixin",
@@ -74,10 +91,15 @@
 		"client.LocalPlayerEntityMixin",
 		"client.PlayerRendererMixin",
 		"client.RemotePlayerEntityMixin",
-		"client.ScreenEffectRendererMixin"
+		"client.ScreenEffectRendererMixin",
+		"client.rotation.RotationRenderRegionMixin",
+		"client.rotation.RotationBlockRenderMixin",
+		"client.rotation.RotationBlockEntityRenderMixin",
+		"client.rotation.EmbeddiumContextMixin",
+		"client.rotation.EmbeddiumWorldSliceMixin",
+		"client.rotation.EmbeddiumOcclusionMixin"
 	],
-	"server": [
-	],
+	"server": [],
 	"injectors": {
 		"defaultRequire": 1
 	},

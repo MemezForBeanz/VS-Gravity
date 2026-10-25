@@ -15,13 +15,9 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.network.NetworkEvent;
 
 /**
- * Client -> server: the sender's resolved gravity plating choice (or that it has none).
- *
- * Players are client-authoritative for plating: detection runs against the client's own
- * position and the server would otherwise flip 1-2 ticks out of step and fight the client
- * over position. The server verifies the report (the source block must be a plate within
- * plausible reach) before trusting it - the same scheme as AmethystGravity's original
- * client-report + server-verify design.
+ * Client to server: the sender's resolved gravity plating choice, or none. Players are
+ * client-authoritative for plating; the server checks the source is a plate within reach
+ * (AmethystGravity's client-report, server-verify scheme).
  */
 public class UpdatePlatingGravityPacket
 {

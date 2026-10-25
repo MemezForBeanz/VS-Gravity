@@ -69,10 +69,7 @@ public abstract class CameraMixin {
         double entityZ = Mth.lerp((double) tickDelta, focusedEntity.zo, focusedEntity.getZ());
         double currentCameraY = Mth.lerp(tickDelta, this.eyeHeightOld, this.eyeHeight);
 
-        // Rotate the eye offset with the same smoothed rotation the frame is rendered
-        // with, and let the animation compensate the rotation-center jump during flips —
-        // placing the eye in the final frame while the rotation is still easing makes the
-        // camera pop sideways on every gravity change.
+        // The eye offset uses the frame's smoothed rotation, the animation compensating the rotation-centre jump
         Quaternionf frameRotation = GravityCameraState.hasCachedRotation()
                 ? GravityCameraState.getLastSmoothedRotation()
                 : new Quaternionf(gravityDirection.getWorldToPlayerRotation());
@@ -100,13 +97,13 @@ public abstract class CameraMixin {
         if (this.entity != null) {
             GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(this.entity);
 
-            if (gravityDirection.equals(GravityDirection.DOWN)) {
+            // Normal gravity returns early, unless a field free fall is tilting the view
+            if (gravityDirection.equals(GravityDirection.DOWN)
+                    && GravityChangerAPI.getVisualTilt(this.entity, 1.0f) == null) {
                 return;
             }
 
-            // Get the smoothed gravity rotation from shared state
-            // Use getLastSmoothedRotation to get the already-computed rotation
-            // (GameRendererMixin should have already updated it this frame)
+            // The smoothed rotation GameRendererMixin computed this frame
             Quaternionf smoothedGravityRot;
             if (GravityCameraState.hasCachedRotation()) {
                 smoothedGravityRot = GravityCameraState.getLastSmoothedRotation();

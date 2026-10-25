@@ -8,7 +8,10 @@ import net.memezforbeanz.gravityapi.util.GCUtil;
 
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
+import net.memezforbeanz.gravityapi.util.TeleportRescue;
+import net.minecraftforge.event.entity.living.LivingEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -31,6 +34,26 @@ public class CommonEvents
 		GCUtil.ENTITY_MAP2.put(entity.getClass().getSuperclass().hashCode(), entity);
 	}
 	
+    /** A player starting to track an entity gets its gravity, applied without animation (otherwise only changes are sent). */
+    @SubscribeEvent
+    public static void onStartTracking(PlayerEvent.StartTracking event)
+    {
+        if (event.getEntity() instanceof ServerPlayer player)
+        {
+            GravityCapabilityImpl cap = GravityChangerAPI.getGravityComponentEarly(event.getTarget());
+            if (cap != null)
+            {
+                cap.sendStateTo(player);
+            }
+        }
+    }
+
+    @SubscribeEvent
+    public static void onLivingTick(LivingEvent.LivingTickEvent event)
+    {
+        TeleportRescue.tick(event.getEntity());
+    }
+
     @SubscribeEvent
     public static void onPlayerClone(PlayerEvent.Clone event)
     {

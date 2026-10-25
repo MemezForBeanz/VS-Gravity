@@ -1,6 +1,5 @@
 package net.memezforbeanz.gravityapi.mixin;
 
-
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -42,8 +41,7 @@ public abstract class LivingEntityMixin extends Entity {
     
     @Shadow
     public abstract float getViewYRot(float tickDelta);
-    
-    
+
     public LivingEntityMixin(EntityType<?> type, Level world) {
         super(type, world);
     }
@@ -200,13 +198,11 @@ public abstract class LivingEntityMixin extends Entity {
     private void inject_getBoundingBox(Pose pose, CallbackInfoReturnable<AABB> cir) {
         Entity self = (Entity) (Object) this;
 
-        // Skip hitbox transformation for arbitrary gravity (VS ships)
-        // The isArbitraryGravity check includes the cached inGravityGeneratorField flag
+        // Arbitrary (VS ship) gravity keeps the vanilla hitbox
         if (GravityChangerAPI.isArbitraryGravity(self)) return;
 
         Direction gravityDirection = GravityChangerAPI.getGravityDirection(self);
         if (gravityDirection == Direction.DOWN) return;
-
 
         AABB box = cir.getReturnValue();
         if (gravityDirection.getAxisDirection() == Direction.AxisDirection.POSITIVE) {
@@ -368,8 +364,7 @@ public abstract class LivingEntityMixin extends Entity {
         
         return RotationUtil.vecWorldToPlayer(target.position(), gravityDirection).x;
     }
-    
-    
+
     @Redirect(
         method = "Lnet/minecraft/world/entity/LivingEntity;blockedByShield(Lnet/minecraft/world/entity/LivingEntity;)V",
         at = @At(
@@ -523,54 +518,18 @@ public abstract class LivingEntityMixin extends Entity {
         
         return RotationUtil.vecWorldToPlayer(vec3d, gravityDirection);
     }
-    
-    // TODO shield knockback
-//    @ModifyArg(
-//        method = "blockedByShield",
-//        at = @At(
-//            value = "INVOKE",
-//            target = "Lnet/minecraft/world/phys/Vec3;vectorTo(Lnet/minecraft/world/phys/Vec3;)Lnet/minecraft/world/phys/Vec3;",
-//            ordinal = 0
-//        ),
-//        index = 0
-//    )
-//    private Vec3 modify_blockedByShield_relativize_0(Vec3 vec3d) {
-//        Direction gravityDirection = GravityChangerAPI.getGravityDirection((Entity)(Object)this);
-//        if(gravityDirection == Direction.DOWN) {
-//            return vec3d;
-//        }
-//
-//        return this.getEyePosition();
-//    }
 
-//    @ModifyVariable(
-//        method = "Lnet/minecraft/world/entity/LivingEntity;isDamageSourceBlocked(Lnet/minecraft/world/damagesource/DamageSource;)Z",
-//        at = @At(
-//            value = "INVOKE_ASSIGN",
-//            target = "Lnet/minecraft/world/phys/Vec3;normalize()Lnet/minecraft/world/phys/Vec3;",
-//            ordinal = 0
-//        ),
-//        ordinal = 2
-//    )
-//    private Vec3 modify_blockedByShield_Vec3d_2(Vec3 vec3d) {
-//        Direction gravityDirection = GravityChangerAPI.getGravityDirection((Entity)(Object)this);
-//        if(gravityDirection == Direction.DOWN) {
-//            return vec3d;
-//        }
-//
-//        return RotationUtil.vecWorldToPlayer(vec3d, gravityDirection);
-//    }
-    
-    // Forge's travel sets d0 = 0.08 and then overwrites it with the ENTITY_GRAVITY attribute
-    // value (which carries slow falling), so scale that second store rather than the constant.
+    /** Field free fall accelerates here, after aiStep's small-velocity cutoff, as vanilla gravity does. */
+    @Inject(method = "Lnet/minecraft/world/entity/LivingEntity;travel(Lnet/minecraft/world/phys/Vec3;)V", at = @At("HEAD"))
+    private void gravityapi$freeFallAcceleration(Vec3 movementInput, CallbackInfo ci) {
+        GravityChangerAPI.applyFreeFallAcceleration(this);
+    }
+
+    // Forge's travel overwrites d0 = 0.08 with the ENTITY_GRAVITY attribute (slow falling): scale that store
     @ModifyVariable(method = "Lnet/minecraft/world/entity/LivingEntity;travel(Lnet/minecraft/world/phys/Vec3;)V", at = @At(value = "STORE", ordinal = 1), ordinal = 0)
     private double multiplyGravity(double constant) {
-        // Gravity is always applied (scaled by the entity's gravity strength), even under arbitrary
-        // (VS ship) gravity. Collision for ship gravity is now resolved in ship-local space (see
-        // EntityMixin#collideOnShip), which cancels the gravity vector exactly against the ship
-        // floor instead of leaving a sideways drift. Continuously applying gravity keeps the entity
-        // pressed into the floor so onGround stays true and ground friction can damp horizontal
-        // velocity - without it, onGround flickers and the entity slides off the deck.
+        // Always applied, under ship gravity too: it keeps the entity pressed onto the deck so onGround
+        // and ground friction work (the ship-space collision cancels it exactly)
         return constant * GravityChangerAPI.getGravityStrength(this);
     }
     

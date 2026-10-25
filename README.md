@@ -30,10 +30,10 @@ repositories {
 
 dependencies {
     // Compile against + run with the library in dev
-    implementation fg.deobf("net.memezforbeanz.gravityapi:gravityapi:1.0.6")
+    implementation fg.deobf("net.memezforbeanz.gravityapi:gravityapi:1.0.28")
 
     // Nest it inside your mod jar (Jar-in-Jar) so players don't need a separate download
-    jarJar(group: 'net.memezforbeanz.gravityapi', name: 'gravityapi', version: '[1.0.6,)')
+    jarJar(group: 'net.memezforbeanz.gravityapi', name: 'gravityapi', version: '[1.0.28,)')
 }
 ```
 
@@ -41,7 +41,7 @@ Same `gpr.user` / `gpr.token` (or `GITHUB_ACTOR` / `GITHUB_TOKEN`) credentials a
 the consuming side to resolve the dependency — put them in that project's
 `~/.gradle/gradle.properties`, not its repo.
 
-### Option B: local maven 
+### Option B: Maven Local
 
 ```
 ./gradlew publishToMavenLocal

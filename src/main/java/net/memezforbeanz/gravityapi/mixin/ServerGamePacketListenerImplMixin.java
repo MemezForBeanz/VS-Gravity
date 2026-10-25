@@ -1,6 +1,5 @@
 package net.memezforbeanz.gravityapi.mixin;
 
-
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -46,100 +45,6 @@ public abstract class ServerGamePacketListenerImplMixin {
     @Shadow
     private double lastGoodZ;
 
-//    @Redirect(
-//            method = "onPlayerMove",
-//            at = @At(
-//                    value = "INVOKE",
-//                    target = "Lnet/minecraft/server/network/ServerPlayerEntity;getY()D",
-//                    ordinal = 3
-//            )
-//    )
-//    private double redirect_onPlayerMove_getY_3(ServerPlayerEntity serverPlayerEntity) {
-//        Direction gravityDirection = GravityChangerAPI.getGravityDirection(serverPlayerEntity);
-//        if(gravityDirection == Direction.DOWN) {
-//            return serverPlayerEntity.getY();
-//        }
-//
-//        return RotationUtil.vecWorldToPlayer(serverPlayerEntity.getPos(), gravityDirection).y;
-//    }
-//
-//    @Redirect(
-//            method = "onPlayerMove",
-//            at = @At(
-//                    value = "INVOKE",
-//                    target = "Lnet/minecraft/server/network/ServerPlayerEntity;getY()D",
-//                    ordinal = 7
-//            )
-//    )
-//    private double redirect_onPlayerMove_getY_7(ServerPlayerEntity serverPlayerEntity) {
-//        Direction gravityDirection = GravityChangerAPI.getGravityDirection(serverPlayerEntity);
-//        if(gravityDirection == Direction.DOWN) {
-//            return serverPlayerEntity.getY();
-//        }
-//
-//        return RotationUtil.vecWorldToPlayer(serverPlayerEntity.getPos(), gravityDirection).y;
-//    }
-//
-//    @ModifyVariable(
-//            method = "onPlayerMove",
-//            at = @At(
-//                    value = "INVOKE",
-//                    target = "Lnet/minecraft/server/network/ServerPlayerEntity;isOnGround()Z",
-//                    ordinal = 0
-//            ),
-//            ordinal = 0
-//    )
-//    private boolean modify_onPlayerMove_boolean_0(boolean value, PlayerMoveC2SPacket packet) {
-//        Direction gravityDirection = GravityChangerAPI.getGravityDirection(this.player);
-//        if(gravityDirection == Direction.DOWN) {
-//            return value;
-//        }
-//
-//        gravitychanger$onPlayerMove_playerMovementY = RotationUtil.vecWorldToPlayer(
-//                clampHorizontal(packet.getX(this.player.getX())) - this.updatedX,
-//                clampVertical(packet.getY(this.player.getY())) - this.updatedY,
-//                clampHorizontal(packet.getZ(this.player.getZ())) - this.updatedZ,
-//                gravityDirection
-//        ).y;
-//        return gravitychanger$onPlayerMove_playerMovementY > 0.0D;
-//    }
-//
-//    @ModifyVariable(
-//            method = "onPlayerMove",
-//            at = @At(
-//                    value = "INVOKE",
-//                    target = "Lnet/minecraft/server/network/ServerPlayerEntity;getX()D",
-//                    ordinal = 5
-//            ),
-//            ordinal = 10
-//    )
-//    private double modify_onPlayerMove_double_12(double value) {
-//        Direction gravityDirection = GravityChangerAPI.getGravityDirection(this.player);
-//        if(gravityDirection == Direction.DOWN) {
-//            return value;
-//        }
-//
-//        return gravitychanger$onPlayerMove_playerMovementY;
-//    }
-//
-//    @ModifyArg(
-//            method = "onPlayerMove",
-//            at = @At(
-//                    value = "INVOKE",
-//                    target = "Lnet/minecraft/server/network/ServerPlayerEntity;move(Lnet/minecraft/entity/MovementType;Lnet/minecraft/util/math/Vec3d;)V",
-//                    ordinal = 0
-//            ),
-//            index = 1
-//    )
-//    private Vec3d modify_onPlayerMove_move_0(Vec3d vec3d) {
-//        Direction gravityDirection = GravityChangerAPI.getGravityDirection(this.player);
-//        if(gravityDirection == Direction.DOWN) {
-//            return vec3d;
-//        }
-//
-//        return RotationUtil.vecWorldToPlayer(vec3d, gravityDirection);
-//    }
-    
     @ModifyArg(
         method = "handleMovePlayer",
         at = @At(
@@ -157,12 +62,9 @@ public abstract class ServerGamePacketListenerImplMixin {
     }
 
     /**
-     * The "moved wrongly" threshold (0.0625 sq-blocks) compares the client's claimed
-     * position against the server's own movement simulation. Around a gravity flip the two
-     * sides briefly disagree on the gravity frame (the flip lands 1-2 ticks apart), and
-     * under non-down/ship gravity the server simulation is not authoritative anyway - the
-     * teleport-back it triggers is the rubber-banding desync. Relax the check in exactly
-     * those windows; normal DOWN-gravity play keeps the vanilla threshold.
+     * Relax the "moved wrongly" check around gravity flips and under non-down/ship gravity, where
+     * client and server briefly disagree on the gravity frame and the teleport-back rubber-bands.
+     * Normal DOWN gravity keeps the vanilla threshold.
      */
     @ModifyConstant(
         method = "handleMovePlayer",
@@ -185,41 +87,7 @@ public abstract class ServerGamePacketListenerImplMixin {
         }
         return original;
     }
-    
-    //@Redirect(
-    //        method = "onVehicleMove",
-    //        at = @At(
-    //                value = "INVOKE",
-    //                target = "Lnet/minecraft/entity/Entity;getY()D",
-    //                ordinal = 0
-    //        )
-    //)
-    //private double redirect_onVehicleMove_getY_0(Entity instance) {
-    //    Direction gravityDirection = ((EntityAccessor) instance).gravitychanger$getAppliedGravityDirection();
-    //    if(gravityDirection == Direction.DOWN) {
-    //        return instance.getY();
-    //    }
-//
-    //    return RotationUtil.vecWorldToPlayer(instance.getPos(), gravityDirection).y;
-    //}
-//
-    //@Redirect(
-    //        method = "onVehicleMove",
-    //        at = @At(
-    //                value = "INVOKE",
-    //                target = "Lnet/minecraft/entity/Entity;getY()D",
-    //                ordinal = 2
-    //        )
-    //)
-    //private double redirect_onVehicleMove_getY_2(Entity instance) {
-    //    Direction gravityDirection = ((EntityAccessor) instance).gravitychanger$getAppliedGravityDirection();
-    //    if(gravityDirection == Direction.DOWN) {
-    //        return instance.getY();
-    //    }
-//
-    //    return RotationUtil.vecWorldToPlayer(instance.getPos(), gravityDirection).y;
-    //}
-    
+
     @ModifyArg(
         method = "handleMoveVehicle",
         at = @At(
@@ -236,25 +104,7 @@ public abstract class ServerGamePacketListenerImplMixin {
         
         return RotationUtil.vecWorldToPlayer(vec3d, gravityDirection);
     }
-    
-    //@ModifyVariable(
-    //        method = "onVehicleMove",
-    //        at = @At(
-    //                value = "INVOKE",
-    //                target = "Lnet/minecraft/entity/Entity;getX()D",
-    //                ordinal = 1
-    //        ),ordinal = 0
-    //)
-    //private double modify_onVehicleMove_double_12(double value) {
-    //    Direction gravityDirection = GravityChangerAPI.getGravityDirection(this.player);
-    //    if(gravityDirection == Direction.DOWN) {
-    //        return value;
-    //    }
-//
-    //    return gravitychanger$onPlayerMove_playerMovementY;
-    //}
-    
-    
+
     @WrapOperation(
         method = "noBlocksAround",
         at = @At(

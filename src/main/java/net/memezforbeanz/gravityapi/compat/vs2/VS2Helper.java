@@ -19,11 +19,7 @@ import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Helper class that directly interacts with VS2 API using reflection.
- * This class avoids direct imports of VS2 classes to prevent ClassNotFoundException
- * when VS2 is not present.
- */
+/** VS2 access through reflection, so VS2 stays an optional dependency. */
 public class VS2Helper {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VS2Helper.class);
@@ -31,10 +27,7 @@ public class VS2Helper {
     private static Method getShipsIntersectingMethod = null;
     private static boolean initAttempted = false;
 
-    // Reflection is unavoidable here (no compile-time VS2 linkage), but string-based
-    // getMethod/getConstructor/forName lookups are not - they dominated the cost when these
-    // helpers ran per entity per tick (and per collide sub-step). Cache every lookup; a cached
-    // Method.invoke JITs to near-direct-call cost.
+    // Reflection lookups are cached: these helpers run per entity per tick
     private static final Map<Class<?>, Map<String, Method>> METHOD_CACHE = new ConcurrentHashMap<>();
     private static volatile Class<?> vector3dClassCached = null;
     private static volatile Constructor<?> vector3dCtorCached = null;
@@ -73,13 +66,9 @@ public class VS2Helper {
 
         try {
             Class<?> vsGameUtilsClass = Class.forName("org.valkyrienskies.mod.common.VSGameUtilsKt");
-            // getShipManagingPos resolves a ship from a SHIPYARD block position (it checks
-            // isChunkInShipyard). It is only valid for ship-local coordinates (e.g. a block that is
-            // part of a ship's structure), NOT for an entity's world position.
+            // getShipManagingPos takes shipyard positions (blocks of a ship)
             getShipManagingPosMethod = vsGameUtilsClass.getMethod("getShipManagingPos", Level.class, BlockPos.class);
-            // getShipsIntersecting resolves ships from a WORLD-space AABB (it queries each ship's
-            // world AABB). This is what we need to find the ship an entity is physically standing on,
-            // since the entity's position is in world space, not shipyard space.
+            // getShipsIntersecting takes a world AABB (entities standing on a ship)
             getShipsIntersectingMethod = vsGameUtilsClass.getMethod("getShipsIntersecting", Level.class, AABB.class);
             LOGGER.info("[VS2Helper] Successfully initialized VS2 integration - found getShipManagingPos and getShipsIntersecting methods");
         } catch (Exception e) {
@@ -108,13 +97,8 @@ public class VS2Helper {
     }
 
     /**
-     * Get the ship that an entity is standing on / inside, resolved from the entity's WORLD-space
-     * bounding box.
-     *
-     * <p>We deliberately use {@code getShipsIntersecting} (a world-AABB query) rather than
-     * {@code getShipManagingPos}: the latter only resolves ships from shipyard coordinates, so it
-     * returns {@code null} for an entity standing on a ship out in the world - which previously made
-     * ship-local collision silently fall back to (sliding) world-space collision.
+     * The ship an entity is standing on or inside, from its world-space bounding box
+     * ({@code getShipsIntersecting}; {@code getShipManagingPos} only takes shipyard positions).
      */
     @Nullable
     public static Object getShipEntityIsOn(Entity entity) {
@@ -125,17 +109,14 @@ public class VS2Helper {
 
         Level level = entity.level();
 
-        // The scan below is hit from the collision pipeline and hitbox checks several times per
-        // entity per tick; the supporting ship can't meaningfully change mid-tick, so serve repeat
-        // queries within the same game tick from the entity's cache (null results included).
+        // Cached per game tick: hit several times per entity per tick from collision and hitbox checks
         long gameTime = level.getGameTime();
         ShipIntersectionCache cache = entity instanceof ShipIntersectionCache c ? c : null;
         if (cache != null && cache.gravityapi$getShipCacheTime() == gameTime) {
             return cache.gravityapi$getCachedShip();
         }
 
-        // Inflate slightly so the supporting ship is still found in the instant the entity's feet are
-        // a hair above the deck (e.g. just before/while settling onto it).
+        // Inflated so a ship is still found with the feet a hair above the deck
         AABB worldBox = entity.getBoundingBox().inflate(0.5D);
 
         try {
@@ -150,8 +131,7 @@ public class VS2Helper {
                 return null;
             }
 
-            // Pick the ship whose world AABB is closest (by center) to the entity, so that when an
-            // entity overlaps more than one ship we resolve collision against the nearest one.
+            // Overlapping several ships: the one whose AABB centre is nearest
             Object best = null;
             double bestDistSq = Double.MAX_VALUE;
             int count = 0;
@@ -167,7 +147,6 @@ public class VS2Helper {
                     best = ship;
                 }
             }
-            // Only log for players (or any entity that actually found a ship) to avoid mob spam.
             if (ShipCollisionDebug.VERBOSE && ((ShipCollisionDebug.shouldLogPlayer(entity)) || (best != null && ShipCollisionDebug.shouldLog(entity)))) {
                 ShipCollisionDebug.log("[detect] entity={} pos={} box={} -> {} intersecting ship(s), chosen={}",
                         entity.getName().getString(), entityPos, worldBox, count,
@@ -188,6 +167,61 @@ public class VS2Helper {
         }
     }
 
+    /** A ship's transforms between world and shipyard space. */
+    public record ShipFrame(Object worldToShip, Object shipToWorld) {
+        @Nullable
+        public Vec3 toShip(Vec3 worldPos) {
+            return transformPosition(worldToShip, worldPos);
+        }
+
+        @Nullable
+        public Vec3 toWorld(Vec3 shipPos) {
+            return transformPosition(shipToWorld, shipPos);
+        }
+
+        @Nullable
+        public Vec3 directionToWorld(Vec3 shipDir) {
+            return transformDirection(shipToWorld, shipDir);
+        }
+
+        @Nullable
+        public Vec3 directionToShip(Vec3 worldDir) {
+            return transformDirection(worldToShip, worldDir);
+        }
+    }
+
+    /** A ship's current frame, or null if its transform can't be read. */
+    @Nullable
+    public static ShipFrame frameOf(@Nullable Object ship) {
+        Object worldToShip = getWorldToShipMatrixFromShip(ship);
+        Object shipToWorld = getShipToWorldMatrixFromShip(ship);
+        return worldToShip != null && shipToWorld != null ? new ShipFrame(worldToShip, shipToWorld) : null;
+    }
+
+    /** The frames of the ships whose world bounds intersect {@code worldBox}. */
+    public static java.util.List<ShipFrame> shipFramesIntersecting(Level level, AABB worldBox) {
+        init();
+        java.util.List<ShipFrame> frames = new java.util.ArrayList<>();
+        if (getShipsIntersectingMethod == null) {
+            return frames;
+        }
+        try {
+            Object ships = getShipsIntersectingMethod.invoke(null, level, worldBox);
+            if (ships instanceof Iterable<?> iterable) {
+                for (Object ship : iterable) {
+                    Object worldToShip = getWorldToShipMatrixFromShip(ship);
+                    Object shipToWorld = getShipToWorldMatrixFromShip(ship);
+                    if (worldToShip != null && shipToWorld != null) {
+                        frames.add(new ShipFrame(worldToShip, shipToWorld));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // No ships, then
+        }
+        return frames;
+    }
+
     /** Best-effort ship id for logging. */
     private static Object safeShipId(Object ship) {
         try {
@@ -197,11 +231,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Squared distance from a ship's world-AABB center to the given world position. Returns
-     * {@link Double#MAX_VALUE} if the AABB can't be read (so such ships are never preferred, but a
-     * single intersecting ship is still returned by the caller's "closest" loop).
-     */
+    /** Squared distance from a ship's world-AABB centre to a position; {@link Double#MAX_VALUE} if unreadable. */
     private static double worldAabbCenterDistanceSq(Object ship, Vec3 worldPos) {
         try {
             Method getWorldAABBMethod = cachedMethod(ship.getClass(), "getWorldAABB");
@@ -225,16 +255,9 @@ public class VS2Helper {
     }
 
     /**
-     * Rotation the supporting ship underwent this game tick, as the world-frame delta quaternion
-     * from the ship's previous-tick transform to its current transform - the same
-     * prevTickTransform -> transform delta VS2's own EntityDragger uses to carry entities along.
-     * Returns {@code null} when the entity isn't on a ship, the delta is negligible, or the
-     * transforms can't be read.
-     *
-     * <p>Used to re-anchor stored world-space ship-gravity directions each tick: an effect vector
-     * computed by a block entity last tick (or held by the effect linger) is expressed in a stale
-     * ship orientation; rotating it by this delta re-expresses it in the ship's current one, so
-     * "down" tracks a spinning ship instead of lagging it.
+     * The supporting ship's rotation this tick (prev-tick to current transform, as VS2's
+     * EntityDragger uses), or {@code null} off-ship, when negligible or unreadable. Re-anchors
+     * stored world-space ship gravity to the ship's current orientation.
      */
     @Nullable
     public static org.joml.Quaterniond getShipRotationDeltaThisTick(Entity entity) {
@@ -259,9 +282,9 @@ public class VS2Helper {
             if (curr == null || prev == null) {
                 return null;
             }
-            // delta * prev == curr  ->  delta = curr * prev^-1 (conjugate: unit quaternions)
+            // delta = curr * prev^-1
             org.joml.Quaterniond delta = curr.mul(prev.conjugate(), new org.joml.Quaterniond());
-            // Identity (parked ship) - skip the downstream work. cos(theta/2) ~ 1.
+            // Parked ship
             if (Math.abs(delta.w) > 0.99999999) {
                 return null;
             }
@@ -272,11 +295,9 @@ public class VS2Helper {
     }
 
     /**
-     * Anchor a ship-relative gravity direction to the ship the entity is on: record the
-     * direction in that ship's frame so it can be re-resolved from later transforms.
+     * Anchor a ship-relative direction to the entity's ship, recording it in the ship's frame.
      *
-     * @param prevTick convert with the ship's previous-tick transform — for directions computed
-     *                 by a block entity last tick and only resolved now (plating candidates)
+     * @param prevTick use the previous-tick transform (directions a block entity computed last tick)
      * @return the anchored direction, or {@code null} if the entity isn't on a readable ship
      */
     @Nullable
@@ -298,24 +319,47 @@ public class VS2Helper {
             org.joml.Vector3d local = shipToWorld.conjugate(new org.joml.Quaterniond())
                     .transform(new org.joml.Vector3d(world.x, world.y, world.z));
             long shipId = (Long) cachedMethod(ship.getClass(), "getId").invoke(ship);
-            return GravityDirection.shipAnchored(world, ship, shipId, new Vec3(local.x, local.y, local.z));
+            return GravityDirection.shipAnchored(shipToWorld, ship, shipId, new Vec3(local.x, local.y, local.z));
         } catch (Exception e) {
             return null;
         }
     }
 
     /**
-     * The world-space vector of a ship-anchored direction under its ship's current transform.
-     *
-     * @param render use the client ship's interpolated render transform (per-frame camera and
-     *               model rotation); falls back to the tick transform where there is none
-     * @return the world vector, or {@code null} if unanchored or the ship can't be read
+     * Rebuild a ship-anchored direction on this side from its ship id and ship-local vector (synced
+     * from the other side), or null if the ship isn't loaded here.
      */
     @Nullable
-    public static Vec3 anchoredToWorld(GravityDirection direction, boolean render) {
+    public static GravityDirection anchorToShipById(Level level, long shipId, Vec3 shipLocal) {
+        try {
+            Class<?> vsGameUtilsClass = Class.forName("org.valkyrienskies.mod.common.VSGameUtilsKt");
+            Object shipWorld = cachedMethod(vsGameUtilsClass, "getShipObjectWorld", Level.class).invoke(null, level);
+            if (shipWorld == null) {
+                return null;
+            }
+            Object ships = cachedMethod(shipWorld.getClass(), "getAllShips").invoke(shipWorld);
+            Object ship = cachedMethod(ships.getClass(), "getById", long.class).invoke(ships, shipId);
+            if (ship == null) {
+                return null;
+            }
+            Object transform = cachedMethod(ship.getClass(), "getTransform").invoke(ship);
+            org.joml.Quaterniond shipToWorld = transform != null ? readShipToWorldRotation(transform) : null;
+            return shipToWorld != null ? GravityDirection.shipAnchored(shipToWorld, ship, shipId, shipLocal) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The ship-to-world rotation of an anchored direction's ship, or {@code null} if unanchored or
+     * unreadable.
+     *
+     * @param render use the client's interpolated render transform where there is one
+     */
+    @Nullable
+    public static org.joml.Quaterniond anchoredShipToWorld(GravityDirection direction, boolean render) {
         Object ship = direction.getAnchorShip();
-        Vec3 local = direction.getShipLocalVector();
-        if (ship == null || local == null) {
+        if (ship == null || direction.getShipLocalVector() == null) {
             return null;
         }
         try {
@@ -330,30 +374,30 @@ public class VS2Helper {
             if (transform == null) {
                 transform = cachedMethod(ship.getClass(), "getTransform").invoke(ship);
             }
-            if (transform == null) {
-                return null;
-            }
-            org.joml.Quaterniond shipToWorld = readShipToWorldRotation(transform);
-            if (shipToWorld == null) {
-                return null;
-            }
-            org.joml.Vector3d world = shipToWorld.transform(new org.joml.Vector3d(local.x, local.y, local.z));
-            return new Vec3(world.x, world.y, world.z);
+            return transform != null ? readShipToWorldRotation(transform) : null;
         } catch (Exception e) {
             return null;
         }
     }
 
-    /**
-     * World-to-player rotation for rendering a gravity direction this frame: ship-anchored
-     * directions follow the ship's interpolated render transform, so the camera and model turn
-     * exactly with the ship as drawn rather than stepping at tick rate behind it.
-     */
+    /** An anchored direction's current world vector (see {@link #anchoredShipToWorld}), or {@code null}. */
+    @Nullable
+    public static Vec3 anchoredToWorld(GravityDirection direction, boolean render) {
+        org.joml.Quaterniond shipToWorld = anchoredShipToWorld(direction, render);
+        if (shipToWorld == null) {
+            return null;
+        }
+        Vec3 local = direction.getShipLocalVector();
+        org.joml.Vector3d world = shipToWorld.transform(new org.joml.Vector3d(local.x, local.y, local.z));
+        return new Vec3(world.x, world.y, world.z);
+    }
+
+    /** World-to-player rotation to render a gravity direction with: anchored directions follow the ship's render transform. */
     public static org.joml.Quaternionf renderWorldToPlayerRotation(GravityDirection direction) {
         if (direction.isShipAnchored()) {
-            Vec3 world = anchoredToWorld(direction, true);
-            if (world != null && world.lengthSqr() > 1.0E-9D) {
-                return GravityDirection.shipRelative(world).getWorldToPlayerRotation();
+            org.joml.Quaterniond shipToWorld = anchoredShipToWorld(direction, true);
+            if (shipToWorld != null) {
+                return GravityDirection.shipLockedWorldToPlayer(direction.getShipLocalVector(), shipToWorld);
             }
         }
         return direction.getWorldToPlayerRotation();
@@ -381,9 +425,7 @@ public class VS2Helper {
                 (Double) cachedMethod(quaternion.getClass(), "w").invoke(quaternion));
     }
 
-    /**
-     * Get the ship's rotation as a double array [x, y, z, w], or null if not on a ship
-     */
+    /** The ship's rotation as [x, y, z, w], or null if not on a ship */
     @Nullable
     public static double[] getShipRotation(Entity entity) {
         Object ship = getShipEntityIsOn(entity);
@@ -412,9 +454,7 @@ public class VS2Helper {
         return null;
     }
 
-    /**
-     * Transform a world-space direction to ship-local space
-     */
+    /** World-space direction to ship-local */
     @Nullable
     public static Vec3 worldToShipDirection(Entity entity, Vec3 worldDir) {
         Object matrix = getWorldToShipMatrix(entity);
@@ -443,9 +483,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Transform a ship-local direction to world space
-     */
+    /** Ship-local direction to world space */
     @Nullable
     public static Vec3 shipToWorldDirection(Entity entity, Vec3 shipDir) {
         Object matrix = getShipToWorldMatrix(entity);
@@ -474,17 +512,13 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Get the "up" direction of the ship in world space
-     */
+    /** The ship's up direction in world space */
     @Nullable
     public static Vec3 getShipUpDirection(Entity entity) {
         return shipToWorldDirection(entity, new Vec3(0, 1, 0));
     }
 
-    /**
-     * Transform a position from world space to ship-local space
-     */
+    /** World-space position to ship-local */
     @Nullable
     public static Vec3 worldToShipPosition(Entity entity, Vec3 worldPos) {
         Object matrix = getWorldToShipMatrix(entity);
@@ -513,9 +547,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Transform a position from ship-local space to world space
-     */
+    /** Ship-local position to world space */
     @Nullable
     public static Vec3 shipToWorldPosition(Entity entity, Vec3 shipPos) {
         Object matrix = getShipToWorldMatrix(entity);
@@ -576,9 +608,7 @@ public class VS2Helper {
         return null;
     }
 
-    /**
-     * Get ship from a specific block position
-     */
+    /** The ship at a block position */
     @Nullable
     public static Object getShipAtBlock(Level level, BlockPos pos) {
         init();
@@ -599,16 +629,23 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Check if a block position is within a ship
-     */
+    /** Logical target-grid rotation, using the shared reflective VS2 compatibility path. */
+    @Nullable
+    public static org.joml.Quaterniond getPlacementShipRotation(Object ship) {
+        try {
+            Object transform = cachedMethod(ship.getClass(), "getTransform").invoke(ship);
+            return transform == null ? null : readShipToWorldRotation(transform);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Whether a block position is on a ship */
     public static boolean isBlockOnShip(Level level, BlockPos pos) {
         return getShipAtBlock(level, pos) != null;
     }
 
-    /**
-     * Get the ship ID from a block position
-     */
+    /** The ship id at a block position */
     @Nullable
     public static Long getShipIdAtBlock(Level level, BlockPos pos) {
         Object ship = getShipAtBlock(level, pos);
@@ -623,9 +660,7 @@ public class VS2Helper {
         return null;
     }
 
-    /**
-     * Transform a ship-local position to world position using a block's ship context
-     */
+    /** Ship-local position to world, using the ship the block is on */
     @Nullable
     public static Vec3 shipToWorldPosition(Level level, BlockPos blockOnShip, Vec3 shipPos) {
         Object ship = getShipAtBlock(level, blockOnShip);
@@ -663,9 +698,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Transform a ship-local direction to world direction using a block's ship context
-     */
+    /** Ship-local direction to world, using the ship the block is on */
     @Nullable
     public static Vec3 shipToWorldDirectionFromBlock(Level level, BlockPos blockOnShip, Vec3 shipDir) {
         Object ship = getShipAtBlock(level, blockOnShip);
@@ -699,9 +732,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Transform a world position to ship-local position using a block's ship context
-     */
+    /** World position to ship-local, using the ship the block is on */
     @Nullable
     public static Vec3 worldToShipPosition(Level level, BlockPos blockOnShip, Vec3 worldPos) {
         Object ship = getShipAtBlock(level, blockOnShip);
@@ -735,9 +766,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Transform a world direction to a ship-local direction using a block's ship context
-     */
+    /** World direction to ship-local, using the ship the block is on */
     @Nullable
     public static Vec3 worldToShipDirectionFromBlock(Level level, BlockPos blockOnShip, Vec3 worldDir) {
         Object ship = getShipAtBlock(level, blockOnShip);
@@ -771,10 +800,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * Transform a shipyard-space AABB to the world-space AABB enclosing it (corner sweep).
-     * Returns null when the block is not on a ship or the transform is unavailable.
-     */
+    /** Shipyard AABB to the world AABB enclosing it; null when the block isn't on a ship. */
     @Nullable
     public static AABB shipBoxToWorldBox(Level level, BlockPos blockOnShip, AABB shipBox) {
         double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
@@ -798,10 +824,7 @@ public class VS2Helper {
         return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
     }
 
-    /**
-     * Transform a world-space AABB to the shipyard-space AABB enclosing it (corner sweep).
-     * Returns null when the block is not on a ship or the transform is unavailable.
-     */
+    /** World AABB to the shipyard AABB enclosing it; null when the block isn't on a ship. */
     @Nullable
     public static AABB worldBoxToShipBox(Level level, BlockPos blockOnShip, AABB worldBox) {
         double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
@@ -903,19 +926,11 @@ public class VS2Helper {
     }
 
     /**
-     * Build a ship-local collision context for an entity that is standing on (or inside the
-     * region of) a VS2 ship.
+     * Ship-local collision context: the entity's box and movement in shipyard space, where the
+     * ship's blocks are axis-aligned. Vanilla collision runs there and the result is converted
+     * back with {@link ShipCollisionContext#shipDirToWorld(Vec3)}.
      *
-     * <p>The returned context expresses the entity's bounding box and intended movement in the
-     * ship's local "shipyard" coordinate space, where the ship's own blocks are axis-aligned and
-     * gravity (from a gravity generator) points straight down (-Y). Running Minecraft's standard
-     * axis-separated collision in this space and then converting the result back to world space
-     * (via {@link ShipCollisionContext#shipDirToWorld(Vec3)}) produces correct collision against
-     * arbitrarily-rotated ship geometry, instead of the world-axis sliding/clipping that happens
-     * when an axis-aligned box is swept against tilted shapes.
-     *
-     * @return the ship-local collision context, or {@code null} if the entity is not on a ship or
-     *         the ship transform could not be resolved (caller should fall back to normal collision)
+     * @return the context, or {@code null} if the entity isn't on a resolvable ship
      */
     @Nullable
     public static ShipCollisionContext getShipCollisionContext(Entity entity, Vec3 worldMovement, AABB worldBox) {
@@ -952,13 +967,8 @@ public class VS2Helper {
                     feetX, feetY, feetZ, shipFeet, worldMovement, shipMovement);
         }
 
-        // Reconstruct an axis-aligned box in ship space from the entity's dimensions. We deliberately
-        // do NOT rotate the world AABB (that would produce an inflated, oriented box); instead we
-        // rebuild it around the ship-space feet position so it stays a tight, ship-aligned box.
-        // The box extends from the feet along the entity's LOCAL up (opposite its gravity), not
-        // ship +Y: an entity standing upside down under the hull has its body hanging toward
-        // ship -Y. Building it toward ship +Y put the whole box inside the hull, so the box top
-        // met the hull underside first and the feet stopped a full body-height below it.
+        // A tight ship-aligned box rebuilt from the ship-space feet, extending along the entity's
+        // local up (ship -Y under the hull)
         Direction up = shipLocalUp(entity, worldToShip);
         double halfWidth = worldBox.getXsize() * 0.5D;
         double halfDepth = worldBox.getZsize() * 0.5D;
@@ -971,11 +981,7 @@ public class VS2Helper {
         return new ShipCollisionContext(shipBox, shipMovement, shipToWorld, up);
     }
 
-    /**
-     * The entity's local up (opposite its gravity) in ship space, snapped to the nearest ship
-     * axis. Ship-relative gravity from on-ship fields is (near) ship-axis-aligned, so the
-     * snapped axis is the one the entity stands along; {@link Direction#UP} if undeterminable.
-     */
+    /** The entity's local up in ship space, snapped to a ship axis; {@link Direction#UP} if undeterminable. */
     private static Direction shipLocalUp(Entity entity, Object worldToShip) {
         Vec3 gravity = GravityChangerAPI.getGravityDirectionVec(entity).getVector();
         Vec3 shipGravity = transformDirection(worldToShip, gravity);
@@ -985,11 +991,7 @@ public class VS2Helper {
         return Direction.getNearest(-shipGravity.x, -shipGravity.y, -shipGravity.z);
     }
 
-    /**
-     * An axis-aligned box spanning {@code [axisMin, axisMax]} along {@code axis}, centered on
-     * {@code center} across the other two axes ({@code halfA} on the first of them in X/Y/Z
-     * order, {@code halfB} on the second).
-     */
+    /** An axis-aligned box spanning {@code [axisMin, axisMax]} along {@code axis}, centred on {@code center} with half-sizes {@code halfA}/{@code halfB} on the other two axes. */
     private static AABB axisBox(Vec3 center, Direction.Axis axis, double axisMin, double axisMax,
                                 double halfA, double halfB) {
         return switch (axis) {
@@ -1000,18 +1002,12 @@ public class VS2Helper {
     }
 
     /**
-     * Check whether the entity is resting on (directly supported by) a VS2 ship's blocks in the
-     * given world-space gravity direction.
+     * Whether the entity rests on ship blocks in the given gravity direction: a thin slab below the
+     * feet, probed in shipyard space. Vanilla's onGround is unreliable once an entity sinks
+     * slightly into tilted ship geometry.
      *
-     * <p>This probes a thin slab just below the entity's feet, transformed into the ship's shipyard
-     * coordinates where its blocks are axis-aligned. It is used as an explicit ground check for
-     * ship gravity, because vanilla's onGround detection (which relies on the downward collision
-     * sweep stopping) becomes unreliable once an entity has sunk slightly into/below tilted ship
-     * geometry - leading to runaway downward velocity accumulation.
-     *
-     * @param worldDownDir the (un-normalized is fine) world-space direction gravity pulls the entity
-     * @param probeDistance how far below the feet to look, in blocks (e.g. 0.2)
-     * @return true if a solid ship block is within {@code probeDistance} below the feet
+     * @param worldDownDir  world-space gravity direction
+     * @param probeDistance how far below the feet to look, in blocks
      */
     public static boolean isSupportedByShipDeck(Entity entity, Vec3 worldDownDir, double probeDistance) {
         Object ship = getShipEntityIsOn(entity);
@@ -1038,10 +1034,7 @@ public class VS2Helper {
         }
         shipDown = shipDown.normalize();
 
-        // A thin slab spanning the entity footprint along the nearest ship axis to gravity, from
-        // just "above" the feet (local up) down by probeDistance. The small margin (0.02) catches
-        // the case where the feet are resting exactly on the block surface. Axis-based so it
-        // works for every orientation — standing on the deck, the hull underside or a wall.
+        // Slab across the footprint along the ship axis nearest gravity, from just above the feet
         Direction up = Direction.getNearest(-shipDown.x, -shipDown.y, -shipDown.z);
         int upSign = up.getAxisDirection().getStep();
         double halfWidth = box.getXsize() * 0.5D;
@@ -1062,21 +1055,12 @@ public class VS2Helper {
     }
 
     /**
-     * How far (along ship-up, in blocks) the entity's feet have sunk below the surface of the ship
-     * block(s) they are standing in.
+     * How far the feet have sunk into the ship block they stand in, along ship-up, so the caller
+     * can push the entity back out. Only shapes topping out within {@code maxDepth} count (walls
+     * don't).
      *
-     * <p>Even with ship-local collision cancelling gravity each tick, an entity standing on a tilted
-     * ship slowly sinks into the deck (residual un-cancelled movement per tick, and/or the ship
-     * physically shifting under an entity that VS2 no longer drags because our collision path
-     * bypasses its world-space shapes). Velocity clamping alone never recovers that penetration, so
-     * once the feet pass the bottom of the deck layer the ground probe stops seeing it and gravity
-     * runs away. This measures the penetration so the caller can push the entity back out.
-     *
-     * <p>Only shapes whose top is within {@code maxDepth} above the feet are considered, so walls
-     * beside the entity (whose tops are a full block or more higher) don't register as "deck".
-     *
-     * @param maxDepth the deepest penetration to look for / report, in blocks (e.g. 0.5)
-     * @return the penetration depth in [0, maxDepth], or 0 if not on a ship / not penetrating
+     * @param maxDepth deepest penetration to report, in blocks
+     * @return depth in [0, maxDepth], 0 if not on a ship or not penetrating
      */
     public static double getShipDeckPenetration(Entity entity, double maxDepth) {
         Object ship = getShipEntityIsOn(entity);
@@ -1098,14 +1082,13 @@ public class VS2Helper {
             return 0.0D;
         }
 
-        // Measured along the entity's local up in ship space: on the hull underside the deck
-        // surface the feet sink into faces ship -Y, on a wall it faces sideways.
+        // Along the entity's local up in ship space
         Direction up = shipLocalUp(entity, worldToShip);
         Direction.Axis axis = up.getAxis();
         int upSign = up.getAxisDirection().getStep();
         double feetAlongUp = shipFeet.get(axis);
 
-        // Footprint shrunk slightly so blocks the entity is merely standing beside don't count.
+        // Footprint shrunk so blocks beside the entity don't count
         double halfWidth = Math.max(0.05D, box.getXsize() * 0.5D - 0.1D);
         double halfDepth = Math.max(0.05D, box.getZsize() * 0.5D - 0.1D);
         double windowEnd = feetAlongUp + maxDepth * upSign;
@@ -1117,12 +1100,10 @@ public class VS2Helper {
             if (shape.isEmpty()) {
                 continue;
             }
-            // The shape's surface facing the entity's local up, as a height above the feet
             AABB bounds = shape.bounds();
             double surface = upSign > 0 ? bounds.max(axis) : bounds.min(axis);
             double height = (surface - feetAlongUp) * upSign;
-            // Ignore shapes that continue past the search window - those are walls, not the deck
-            // surface the feet have sunk into.
+            // Shapes reaching past the window are walls
             if (height > maxDepth + 1.0E-4D) {
                 continue;
             }
@@ -1131,10 +1112,7 @@ public class VS2Helper {
         return Math.min(Math.max(penetration, 0.0D), maxDepth);
     }
 
-    /**
-     * The world-space direction of the entity's local up in the ship frame (the snapped ship
-     * axis depenetration pushes along), or {@code null} if not on a resolvable ship.
-     */
+    /** World-space direction of the entity's local up in the ship frame, or {@code null} off-ship. */
     @Nullable
     public static Vec3 getShipLocalUpInWorld(Entity entity) {
         Object ship = getShipEntityIsOn(entity);
@@ -1154,23 +1132,15 @@ public class VS2Helper {
         return worldUp.normalize();
     }
 
-    // Reflection handles for VS2's entity-dragging bookkeeping, resolved lazily on first use.
+    // VS2's entity-dragging bookkeeping, resolved lazily
     private static Method getDraggingInformationMethod = null;
     private static Method setLastShipStoodOnMethod = null;
     private static boolean draggingInitAttempted = false;
 
     /**
-     * Keep VS2's entity dragging alive for an entity standing on a ship.
-     *
-     * <p>VS2's {@code EntityDragger} runs every tick and carries entities along with the motion of
-     * the ship they stand on (position AND yaw, from the prev-tick-to-current transform delta) —
-     * but only for entities whose {@code EntityDraggingInformation.lastShipStoodOn} was refreshed
-     * within the last 25 ticks. Stock VS2 refreshes that field exclusively inside
-     * {@code EntityShipCollisionUtils.adjustEntityMovementForShipCollisions}, which we cancel at
-     * HEAD for ship-gravity entities (their collision runs through our ship-local path instead).
-     * Without this call those entities are never dragged at all: a moving/rotating ship slides out
-     * from under (or into) them every tick, which is exactly the clipping/glitching seen on fast
-     * ships. Setting the field is enough — VS2's setter also resets {@code ticksSinceStoodOnShip}.
+     * Keep VS2 dragging an entity standing on a ship. VS2 only drags entities whose
+     * {@code lastShipStoodOn} was refreshed recently, and refreshes it in its collision code, which
+     * ship-gravity entities skip.
      *
      * @return true if the entity is on a ship and the dragging info was updated
      */
@@ -1205,10 +1175,7 @@ public class VS2Helper {
         }
     }
 
-    /**
-     * The world-space direction of "ship up" (ship-local +Y), or {@code null} if the entity is not
-     * on a resolvable ship.
-     */
+    /** World-space ship up (ship +Y), or {@code null} off-ship. */
     @Nullable
     public static Vec3 getShipUpInWorld(Entity entity) {
         Object ship = getShipEntityIsOn(entity);
@@ -1226,10 +1193,7 @@ public class VS2Helper {
         return up.normalize();
     }
 
-    /**
-     * Holds the ship-local inputs for a collision sweep and the matrix needed to convert the
-     * resulting movement back into world space.
-     */
+    /** A collision sweep's ship-local inputs and the transform back to world space. */
     public static final class ShipCollisionContext {
         public final AABB shipBox;
         public final Vec3 shipMovement;
@@ -1244,11 +1208,7 @@ public class VS2Helper {
             this.up = up;
         }
 
-        /**
-         * Convert a ship-local direction (e.g. the collision-adjusted movement) back to world space.
-         *
-         * @return the world-space vector, or {@code null} if the transform failed
-         */
+        /** Ship-local direction back to world space; {@code null} if the transform failed. */
         @Nullable
         public Vec3 shipDirToWorld(Vec3 shipDir) {
             return transformDirection(shipToWorldMatrix, shipDir);

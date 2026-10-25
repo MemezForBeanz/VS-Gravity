@@ -14,12 +14,9 @@ import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Base class for gravity generator blocks.
- * <p>
- * Extend this and return your own {@link AbstractGravityGeneratorBlockEntity} subclass from
- * {@link #newBlockEntity}. The base class wires up the {@code ACTIVE} blockstate property and
- * a ticker that runs on both logical sides (client-side ticking is required so the local
- * player's gravity can be predicted smoothly).
+ * Base class for gravity generator blocks: return your {@link AbstractGravityGeneratorBlockEntity}
+ * subclass from {@link #newBlockEntity}. Adds the {@code ACTIVE} property and a ticker on both
+ * sides (client ticking lets the local player predict its gravity).
  */
 public abstract class AbstractGravityGeneratorBlock extends BaseEntityBlock {
 

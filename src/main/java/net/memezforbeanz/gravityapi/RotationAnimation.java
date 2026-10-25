@@ -2,7 +2,12 @@ package net.memezforbeanz.gravityapi;
 
 import org.apache.commons.lang3.Validate;
 import org.joml.Quaternionf;
+import org.jetbrains.annotations.Nullable;
+import org.joml.Quaterniond;
 import org.joml.Vector3f;
+
+import net.memezforbeanz.gravityapi.api.GravityDirection;
+import net.memezforbeanz.gravityapi.compat.vs2.VS2Helper;
 
 import net.memezforbeanz.gravityapi.util.QuaternionUtil;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
@@ -19,6 +24,9 @@ public class RotationAnimation {
     private Quaternionf startGravityRotation;
     private Quaternionf endGravityRotation;
     private Vec3 relativeRotationCenter = Vec3.ZERO;
+    /** Set while animating between ship-anchored directions: start and end are then relative to the ship (world-to-player times ship-to-world) and follow its render rotation. */
+    @Nullable
+    private GravityDirection shipFrame = null;
     
     private long startTimeMs;
     private long endTimeMs;
@@ -41,6 +49,7 @@ public class RotationAnimation {
         
         update(timeMs);
         Quaternionf currentAnimatedGravityRotation = getCurrentGravityRotation(prevGravity, timeMs);
+        foldVisualTilt(currentAnimatedGravityRotation, entity);
         
         // camera rotation = view rotation(pitch and yaw) * gravity rotation(animated)
         Quaternionf currentAnimatedCameraRotation = new Quaternionf().set(oldViewRotation).mul(currentAnimatedGravityRotation);
@@ -71,6 +80,7 @@ public class RotationAnimation {
         Quaternionf animationStartGravityRotation = new Quaternionf().set(newViewRotation).conjugate().mul(currentAnimatedCameraRotation);
         
         this.relativeRotationCenter = relativeRotationCenter;
+        shipFrame = null;
         inAnimation = true;
         startGravityRotation = animationStartGravityRotation;
         endGravityRotation = newEndGravityRotation;
@@ -117,13 +127,7 @@ public class RotationAnimation {
         if (!inAnimation) {
             return RotationUtil.getWorldRotationQuaternion(currentGravity);
         }
-        
-        double delta = (double) (timeMs - startTimeMs) / (endTimeMs - startTimeMs);
-        
-        return RotationUtil.interpolate(
-            startGravityRotation, endGravityRotation,
-            mapProgress((float) delta)
-        );
+        return interpolated(timeMs);
     }
     
     public void update(long timeMs) {
@@ -147,7 +151,9 @@ public class RotationAnimation {
             return QuaternionUtil.rotate(localEyeOffset, gravityRotForEntity);
         }
         
-        Vec3 rotationCenterOffset = RotationUtil.vecPlayerToWorld(relativeRotationCenter, newGravity);
+        Vec3 rotationCenterOffset = shipFrame != null
+            ? shipFrame.vecPlayerToWorld(relativeRotationCenter)
+            : RotationUtil.vecPlayerToWorld(relativeRotationCenter, newGravity);
         
         Vec3 eyeOffsetFromRotationCenter = localEyeOffset.subtract(relativeRotationCenter);
         Vec3 rotatedEyeOffsetFromRotationCenter =
@@ -156,24 +162,25 @@ public class RotationAnimation {
         return rotationCenterOffset.add(rotatedEyeOffsetFromRotationCenter);
     }
     
-    /**
-     * Smootherstep (zero velocity AND zero acceleration at both ends): the rotation eases
-     * in gently, sweeps, and settles without the abrupt onset smoothstep has — the Mario
-     * Galaxy feel for gravity flips.
-     */
+    /** Smootherstep: zero velocity and acceleration at both ends. */
     private static float mapProgress(float delta) {
         delta = Mth.clamp(delta, 0, 1);
         return delta * delta * delta * (delta * (delta * 6 - 15) + 10);
     }
     
+    /** Fold a field free fall's visual tilt into the start rotation (and clear it), so the animation starts from what is on screen. */
+    private static void foldVisualTilt(Quaternionf worldToPlayer, Entity entity) {
+        Quaternionf tilt = net.memezforbeanz.gravityapi.api.GravityChangerAPI.consumeVisualTilt(entity);
+        if (tilt != null) {
+            worldToPlayer.premul(tilt.conjugate());
+        }
+    }
+
     public boolean isInAnimation() {
         return inAnimation;
     }
 
-    /**
-     * Start a smooth rotation animation for arbitrary gravity directions (VS ship support).
-     * This handles smooth transitions when the ship rotates but stays within the same cardinal direction.
-     */
+    /** Smooth rotation animation for arbitrary (VS ship) gravity directions. */
     public void startArbitraryRotationAnimation(
         net.memezforbeanz.gravityapi.api.GravityDirection newGravity,
         net.memezforbeanz.gravityapi.api.GravityDirection prevGravity,
@@ -183,42 +190,88 @@ public class RotationAnimation {
             return;
         }
 
-        // Retargets arrive every tick while a ship rotates continuously; keep them short
-        // but not instant so consecutive segments blend into one motion
+        // Retargets arrive every tick on a rotating ship: short, but long enough to blend
         long actualDuration = Math.max(100, Math.min(durationTimeMs, 300));
 
         update(timeMs);
 
-        // Chain from whatever rotation is currently on screen (mid-animation included) so
-        // per-tick retargeting never snaps back to the raw previous frame
+        // Chain from what is on screen, mid-animation included
         Quaternionf currentRotation = getCurrentGravityRotation(prevGravity, timeMs);
-        Quaternionf newRotation = new Quaternionf(newGravity.getWorldToPlayerRotation());
+        foldVisualTilt(currentRotation, entity);
+        Quaternionf newRotation = VS2Helper.renderWorldToPlayerRotation(newGravity);
 
         this.relativeRotationCenter = Vec3.ZERO;
-        inAnimation = true;
-        startGravityRotation = currentRotation;
-        endGravityRotation = newRotation;
-        startTimeMs = timeMs;
-        endTimeMs = timeMs + actualDuration;
+        begin(currentRotation, newRotation, newGravity, timeMs, actualDuration);
     }
 
-    /**
-     * Get the current gravity rotation for arbitrary gravity directions.
-     * This supports smooth interpolation for VS ship rotations.
-     */
+    /** The flip between two ship-anchored faces: from what is on screen ({@code oldView} times the current rotation, tilt folded in), re-based on the view the flip turned to. */
+    public void startShipFaceAnimation(
+        GravityDirection newGravity, GravityDirection prevGravity, Quaternionf oldView,
+        long durationTimeMs, Entity entity, long timeMs, Vec3 relativeRotationCenter
+    ) {
+        if (durationTimeMs == 0) {
+            inAnimation = false;
+            return;
+        }
+        update(timeMs);
+        Quaternionf current = getCurrentGravityRotation(prevGravity, timeMs);
+        foldVisualTilt(current, entity);
+        // Keep the camera (view * gravity rotation) under the new view
+        Quaternionf camera = new Quaternionf(oldView).mul(current);
+        Quaternionf newView = QuaternionUtil.getViewRotation(entity.getXRot(), entity.getYRot());
+        Quaternionf start = newView.conjugate().mul(camera);
+        this.relativeRotationCenter = relativeRotationCenter;
+        begin(start, VS2Helper.renderWorldToPlayerRotation(newGravity), newGravity, timeMs, durationTimeMs);
+    }
+
+    /** Animate between two world-to-player rotations taken now; ship-relative when anchored. */
+    private void begin(Quaternionf start, Quaternionf end, GravityDirection newGravity, long timeMs, long durationTimeMs) {
+        Quaterniond shipToWorld = newGravity.isShipAnchored() ? VS2Helper.anchoredShipToWorld(newGravity, true) : null;
+        if (shipToWorld != null) {
+            Quaternionf shipToWorldF = toFloat(shipToWorld);
+            start = new Quaternionf(start).mul(shipToWorldF);
+            end = new Quaternionf(end).mul(shipToWorldF);
+            shipFrame = newGravity;
+        } else {
+            shipFrame = null;
+        }
+        inAnimation = true;
+        startGravityRotation = start;
+        endGravityRotation = end;
+        startTimeMs = timeMs;
+        endTimeMs = timeMs + durationTimeMs;
+    }
+
+    /** The animated world-to-player rotation at {@code timeMs}. */
+    private Quaternionf interpolated(long timeMs) {
+        double delta = (double) (timeMs - startTimeMs) / (endTimeMs - startTimeMs);
+        Quaternionf rotation = RotationUtil.interpolate(startGravityRotation, endGravityRotation, mapProgress((float) delta));
+        if (shipFrame != null) {
+            Quaterniond shipToWorld = VS2Helper.anchoredShipToWorld(shipFrame, true);
+            if (shipToWorld != null) {
+                return new Quaternionf(rotation).mul(toFloat(shipToWorld).conjugate());
+            }
+        }
+        return rotation;
+    }
+
+    /** Whether the running animation follows a ship. */
+    public boolean isShipRelative() {
+        return inAnimation && shipFrame != null;
+    }
+
+    private static Quaternionf toFloat(Quaterniond q) {
+        return new Quaternionf((float) q.x, (float) q.y, (float) q.z, (float) q.w);
+    }
+
+    /** The current gravity rotation for arbitrary (VS ship) gravity. */
     public Quaternionf getCurrentGravityRotation(net.memezforbeanz.gravityapi.api.GravityDirection currentGravity, long timeMs) {
         update(timeMs);
 
         if (!inAnimation) {
             // Ship-anchored gravity follows the ship's render transform per frame
-            return net.memezforbeanz.gravityapi.compat.vs2.VS2Helper.renderWorldToPlayerRotation(currentGravity);
+            return VS2Helper.renderWorldToPlayerRotation(currentGravity);
         }
-
-        double delta = (double) (timeMs - startTimeMs) / (endTimeMs - startTimeMs);
-
-        return RotationUtil.interpolate(
-            startGravityRotation, endGravityRotation,
-            mapProgress((float) delta)
-        );
+        return interpolated(timeMs);
     }
 }

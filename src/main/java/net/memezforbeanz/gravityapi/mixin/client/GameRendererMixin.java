@@ -58,13 +58,13 @@ public abstract class GameRendererMixin {
             RotationAnimation animation = GravityChangerAPI.getRotationAnimation(focusedEntity);
 
             // Only override vanilla when gravity is not down (either cardinal or arbitrary)
-            boolean hasNonDownGravity = !gravityDirection.equals(GravityDirection.DOWN);
+            // A field free fall's visual tilt counts too: it starts from normal (DOWN) gravity
+            boolean hasNonDownGravity = !gravityDirection.equals(GravityDirection.DOWN)
+                    || GravityChangerAPI.getVisualTilt(focusedEntity, p_109090_) != null;
             boolean hasAnimation = animation != null && animation.isInAnimation();
 
             if (!hasNonDownGravity && !hasAnimation && !GravityCameraState.hasCachedRotation()) {
-                // Fully back to normal gravity AND the smoothed camera has finished easing
-                // to identity (the state resets itself once it gets there). Handing back to
-                // vanilla any earlier snaps off whatever residual rotation is still applied.
+                // Back to normal gravity and the camera has eased to identity: hand back to vanilla
                 return;
             }
             ci.cancel();

@@ -24,37 +24,26 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 
 /**
- * Makes VS2's entity dragger correct for entities under ship gravity.
+ * Makes VS2's entity dragger correct under ship gravity:
  * <ul>
- *     <li><b>Impulses</b>: the dragger hands ship motion back as velocity ({@code Entity.push})
- *     in WORLD space; under changed gravity velocity lives in the gravity-local frame (that's
- *     how {@code push} is treated everywhere else in this mod), so convert it.</li>
- *     <li><b>Yaw</b>: the dragger turns entities with the ship by a world-space yaw delta
- *     (look vector projected onto the world-horizontal plane). Under ship gravity yaw is
- *     gravity-local and the camera already follows the ship's tilt, so on a tilted, turning
- *     ship that delta is wrong and the view swings. Undo VS2's yaw change and instead rotate
- *     the facing by the ship's actual rotation, re-expressed in the new gravity frame.</li>
+ *     <li>impulses: VS2 pushes in world space; velocity here is in the gravity frame;</li>
+ *     <li>yaw: VS2 turns entities by a world-yaw delta, wrong under ship gravity. Ship-anchored
+ *     frames are locked to the ship, so VS2's change is undone; other ship gravity turns the
+ *     facing by the ship's actual rotation.</li>
  * </ul>
  */
 @Mixin(value = EntityDragger.class, remap = false)
 public abstract class VS2EntityDraggerMixin {
 
-    /**
-     * Ship-gravity entities' rotations captured before VS2 drags them this call. Per thread: in
-     * singleplayer the dragger runs concurrently on the integrated server and client threads.
-     */
+    /** Rotations captured before VS2 drags; per thread (the integrated server and client drag concurrently). */
     @Unique
     private static final ThreadLocal<Map<Entity, float[]>> gravityapi$rotationsBeforeDrag =
             ThreadLocal.withInitial(IdentityHashMap::new);
 
     /**
-     * The "boarded a different ship" impulse ({@code addedMovementLastTick - addedMovement}),
-     * skipped for ship-gravity entities. VS2 decides an entity left its ship whenever its
-     * {@code collide} result differs from the requested movement (it assumes that was world
-     * terrain) - but our ship-gravity collision resolves the SHIP deck inside that same call, so
-     * every tick the deck stops the fall VS2 clears {@code lastShipStoodOn}, our ground-stick
-     * restores it, and VS2 sees a fresh boarding. The impulse then fed every uneven ship step
-     * back as a velocity kick (±0.05 alternating on a fast-turning ship): the motion stutter.
+     * Skip the "boarded a different ship" impulse for ship-gravity entities: our collision resolves
+     * the deck inside the same collide call, so VS2 saw a fresh boarding every tick and fed each
+     * uneven step back as a velocity kick.
      */
     @WrapOperation(
             method = "dragEntitiesWithShips",
@@ -93,8 +82,10 @@ public abstract class VS2EntityDraggerMixin {
         rotations.clear();
         for (Entity entity : entities) {
             if (GravityChangerAPI.isShipGravityPhysics(entity)) {
-                float bodyRot = entity instanceof LivingEntity living ? living.yBodyRot : 0.0F;
-                rotations.put(entity, new float[]{entity.getYRot(), entity.getYHeadRot(), bodyRot});
+                LivingEntity living = entity instanceof LivingEntity l ? l : null;
+                rotations.put(entity, new float[]{entity.getYRot(), entity.getYHeadRot(),
+                        living != null ? living.yBodyRot : 0.0F, entity.yRotO,
+                        living != null ? living.yHeadRotO : 0.0F, living != null ? living.yBodyRotO : 0.0F});
             }
         }
     }
@@ -105,6 +96,18 @@ public abstract class VS2EntityDraggerMixin {
         for (Map.Entry<Entity, float[]> entry : rotations.entrySet()) {
             Entity entity = entry.getKey();
             float[] before = entry.getValue();
+            if (GravityChangerAPI.getGravityDirectionVec(entity).isShipAnchored()) {
+                // The frame is locked to the ship, so the local yaw already turns with it: undo VS2's drag
+                entity.setYRot(before[0]);
+                entity.setYHeadRot(before[1]);
+                entity.yRotO = before[3];
+                if (entity instanceof LivingEntity living) {
+                    living.yBodyRot = before[2];
+                    living.yHeadRotO = before[4];
+                    living.yBodyRotO = before[5];
+                }
+                continue;
+            }
             float vsAddedYaw = Mth.wrapDegrees(entity.getYRot() - before[0]);
             float correctYaw = gravityapi$shipYawDelta(entity, before[0]);
             float fix = correctYaw - vsAddedYaw;
@@ -120,11 +123,7 @@ public abstract class VS2EntityDraggerMixin {
         rotations.clear();
     }
 
-    /**
-     * Local-yaw change that keeps the entity facing the same way relative to its ship across
-     * this tick's ship rotation: rotate the world-space facing with the ship and re-read it in
-     * the gravity frame the ship rotation produces.
-     */
+    /** Local-yaw change keeping the entity's facing relative to its ship across this tick's ship rotation. */
     @Unique
     private static float gravityapi$shipYawDelta(Entity entity, float yaw) {
         Quaterniond delta = VS2Helper.getShipRotationDeltaThisTick(entity);

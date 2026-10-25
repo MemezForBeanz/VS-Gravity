@@ -11,7 +11,7 @@ import net.minecraftforge.server.ServerLifecycleHooks;
 
 public class GravityNetwork
 {
-	private static final String PROTOCOL_VERSION = "1";
+	private static final String PROTOCOL_VERSION = "2";
 	public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(new ResourceLocation(GravityAPI.MODID, "gravityapi"),
 			() -> PROTOCOL_VERSION,
 			PROTOCOL_VERSION::equals,
@@ -21,6 +21,7 @@ public class GravityNetwork
 	public static int ID = 0;
 	public static void registerMessages()
 	{
+		CHANNEL.registerMessage(ID++, net.memezforbeanz.gravityapi.rotation.RotationSync.class, net.memezforbeanz.gravityapi.rotation.RotationSync::encode, net.memezforbeanz.gravityapi.rotation.RotationSync::new, net.memezforbeanz.gravityapi.rotation.RotationSync::handle);
 		CHANNEL.registerMessage(ID++, UpdateGravityCapabilityPacket.class, UpdateGravityCapabilityPacket::encode, UpdateGravityCapabilityPacket::new, UpdateGravityCapabilityPacket.Handler::onMessage);
 		CHANNEL.registerMessage(ID++, UpdateGravitySyncStatePacket.class, UpdateGravitySyncStatePacket::encode, UpdateGravitySyncStatePacket::new, UpdateGravitySyncStatePacket.Handler::onMessage);
 		CHANNEL.registerMessage(ID++, UpdatePlatingGravityPacket.class, UpdatePlatingGravityPacket::encode, UpdatePlatingGravityPacket::new, UpdatePlatingGravityPacket.Handler::onMessage);

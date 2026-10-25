@@ -83,11 +83,7 @@ public class ShipGravityCapabilityImpl implements IShipGravityCapability {
             return;
         }
 
-        // The ship query below (getShipsIntersecting, a world-AABB scan over loaded ships) is only
-        // consumed by auto-align transitions and the ship-relative re-apply. With both features off
-        // - the default for every entity - running it per entity per tick was the single biggest
-        // server cost of this mod. lastShipId may go stale here; auto-align treats null as
-        // "wasn't on a ship", which is the correct enter-transition when it gets enabled later.
+        // The ship query is only needed by auto-align and ship-relative re-apply (both off by default)
         if (!autoAlignEnabled && !shipGravityEnabled) {
             lastShipId = null;
             return;

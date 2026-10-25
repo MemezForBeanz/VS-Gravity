@@ -4,6 +4,8 @@ import javax.annotation.Nullable;
 
 import net.memezforbeanz.gravityapi.util.RotationUtil;
 
+import java.util.EnumSet;
+
 import it.unimi.dsi.fastutil.objects.Object2BooleanMap;
 import it.unimi.dsi.fastutil.objects.Object2BooleanOpenHashMap;
 import net.minecraft.core.BlockPos;
@@ -15,7 +17,14 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.PathNavigationRegion;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.block.BaseRailBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.FenceGateBlock;
+import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.level.pathfinder.BlockPathTypes;
@@ -28,17 +37,80 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 
 public class GravityNodeEvaluator extends WalkNodeEvaluator
 {
+    /** Most blocks any scan along gravity walks (the region only covers the search range anyway). */
+    private static final int MAX_COLUMN_SCAN = 64;
+
     private Direction gravityDirection = Direction.DOWN;
     private final Direction[] horizontalDirections = new Direction[4];
     private final Object2BooleanMap<AABB> collisionCache = new Object2BooleanOpenHashMap<>();
+
+    /**
+     * The space the search runs in: the world, or a ship's shipyard (its blocks are real there).
+     * Set by {@link GravityPathNavigation} before each search; without one the mob's world
+     * position and cardinal gravity are used.
+     */
+    @Nullable
+    private Direction frameDown;
+    @Nullable
+    private Vec3 frameFeet;
+    private boolean pendingShipyard;
+    /** The search runs in a ship's shipyard: VS2's world-position path types must stay out of it. */
+    private boolean shipyard;
+    private Vec3 mobFeet = Vec3.ZERO;
+    private BlockPos mobBlock = BlockPos.ZERO;
+    private AABB mobBox = new AABB(0, 0, 0, 0, 0, 0);
+
+    /** Run the next search with gravity {@code down} and the mob's feet at {@code feet}, both in the path's space. */
+    public void setFrame(Direction down, Vec3 feet, boolean shipyard)
+    {
+        this.frameDown = down;
+        this.frameFeet = feet;
+        this.pendingShipyard = shipyard;
+    }
     
     @Override
     public void prepare(PathNavigationRegion p_77620_, Mob p_77621_) 
     {
         this.collisionCache.clear();
         super.prepare(p_77620_, p_77621_);
-        this.gravityDirection = GravityChangerAPI.getGravityDirection(p_77621_);
+        if(this.frameDown != null && this.frameFeet != null)
+        {
+            this.gravityDirection = this.frameDown;
+            this.mobFeet = this.frameFeet;
+            this.shipyard = this.pendingShipyard;
+        }
+        else
+        {
+            this.gravityDirection = GravityChangerAPI.getGravityDirection(p_77621_);
+            this.mobFeet = p_77621_.position();
+            this.shipyard = false;
+        }
+        this.pendingShipyard = false;
+        this.frameDown = null;
+        this.frameFeet = null;
+        // A hair up from the feet, so feet resting on a face land in the cell above it
+        this.mobBlock = BlockPos.containing(this.mobFeet.subtract(Vec3.atLowerCornerOf(this.gravityDirection.getNormal()).scale(0.01)));
+        this.mobBox = RotationUtil.boxPlayerToWorld(this.getBoundingBoxForPose(p_77621_.getPose()), this.gravityDirection).move(this.mobFeet);
         this.updateHorizontalDirections();
+    }
+
+    /** Where feet stand in a node's cell: on its face toward gravity, centred on the body's footprint. */
+    public Vec3 feetIn(BlockPos node)
+    {
+        return feetIn(node, this.gravityDirection, this.entityWidth);
+    }
+
+    /**
+     * Where feet stand for a node: on the cell's face toward {@code down}, centred on the footprint
+     * {@link #getBlockPathTypes} checks ({@code width} cells toward the frame's east and south),
+     * like vanilla's node position plus half the footprint.
+     */
+    public static Vec3 feetIn(BlockPos node, Direction down, int width)
+    {
+        Vec3 east = Vec3.atLowerCornerOf(RotationUtil.dirPlayerToWorld(Direction.EAST, down).getNormal());
+        Vec3 south = Vec3.atLowerCornerOf(RotationUtil.dirPlayerToWorld(Direction.SOUTH, down).getNormal());
+        double half = (width - 1) / 2.0D;
+        return Vec3.atCenterOf(node).add(Vec3.atLowerCornerOf(down.getNormal()).scale(0.5)).add(east.add(south).scale(half));
     }
     
     private void updateHorizontalDirections() 
@@ -53,13 +125,13 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
     public Node getStart() 
     {
     	BlockPos.MutableBlockPos blockpos$mutableblockpos = new BlockPos.MutableBlockPos();
-    	BlockPos blockPos = this.mob.blockPosition();
+    	BlockPos blockPos = this.mobBlock;
     	BlockState blockstate = this.level.getBlockState(blockpos$mutableblockpos.set(blockPos));
     	if(!this.mob.canStandOnFluid(blockstate.getFluidState())) 
     	{
     		if(this.canFloat() && this.mob.isInWater())
     		{
-    			while(true)
+    			for(int i = 0; i < MAX_COLUMN_SCAN; i++)
     			{
     				if(!blockstate.is(Blocks.WATER) && blockstate.getFluidState() != Fluids.WATER.getSource(false)) 
     				{
@@ -72,13 +144,14 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
            }
     		else if(this.mob.onGround()) 
     		{
-    			blockPos = this.mob.blockPosition();
+    			blockPos = this.mobBlock;
     		}
     		else 
     		{
     			int i = 0;
     			BlockPos blockpos;
-    			for(blockpos = this.mob.blockPosition(); (this.level.getBlockState(blockpos).isAir() || this.level.getBlockState(blockpos).isPathfindable(this.level, blockpos, PathComputationType.LAND)) && i < this.mob.level.getMaxBuildHeight(); blockpos = blockpos.relative(this.gravityDirection))
+    			// Bounded: in open space there may be no ground along gravity at all
+    			for(blockpos = this.mobBlock; (this.level.getBlockState(blockpos).isAir() || this.level.getBlockState(blockpos).isPathfindable(this.level, blockpos, PathComputationType.LAND)) && i < MAX_COLUMN_SCAN; blockpos = blockpos.relative(this.gravityDirection))
     			{
     				i++;
     			}
@@ -87,7 +160,7 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
         } 
     	else 
     	{
-    		while(this.mob.canStandOnFluid(blockstate.getFluidState())) 
+    		for(int i = 0; i < MAX_COLUMN_SCAN && this.mob.canStandOnFluid(blockstate.getFluidState()); i++)
     		{
 				blockPos = blockPos.relative(this.gravityDirection.getOpposite());
     			blockstate = this.level.getBlockState(blockpos$mutableblockpos.set(blockPos));
@@ -97,17 +170,34 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
         return this.getStartNode(blockPos);
     }
     
+    /** Floor height along up (vanilla's world Y under DOWN gravity), so step heights compare the right way round on every face. */
     @Override
     protected double getFloorLevel(BlockPos p_164733_) 
     {
-    	return (this.canFloat() || this.isAmphibious()) && this.level.getFluidState(p_164733_).is(FluidTags.WATER) ? (double)p_164733_.get(this.gravityDirection.getAxis()) + 0.5D : this.getFloorLevelForGravity(this.level, p_164733_);
+    	if((this.canFloat() || this.isAmphibious()) && this.level.getFluidState(p_164733_).is(FluidTags.WATER))
+    	{
+    		return this.heightOf(p_164733_.get(this.gravityDirection.getAxis()) + 0.5D);
+    	}
+    	return this.getFloorLevelForGravity(this.level, p_164733_);
     }
     
     public double getFloorLevelForGravity(BlockGetter p_77612_, BlockPos p_77613_) 
     {
     	BlockPos blockpos = p_77613_.relative(this.gravityDirection);
     	VoxelShape voxelshape = p_77612_.getBlockState(blockpos).getCollisionShape(p_77612_, blockpos);
-        return (double)blockpos.get(this.gravityDirection.getAxis()) + (voxelshape.isEmpty() ? 0.0D : voxelshape.max(this.gravityDirection.getOpposite().getAxis()));
+    	Direction.Axis axis = this.gravityDirection.getAxis();
+    	boolean positive = this.gravityDirection.getAxisDirection() == Direction.AxisDirection.POSITIVE;
+    	// The face of the block below (along gravity) that the feet rest on
+    	double surface = voxelshape.isEmpty()
+    		? blockpos.get(axis) + (positive ? 1.0D : 0.0D)
+    		: blockpos.get(axis) + (positive ? voxelshape.min(axis) : voxelshape.max(axis));
+    	return this.heightOf(surface);
+    }
+
+    /** A coordinate on the gravity axis as a height along up. */
+    private double heightOf(double coordinate)
+    {
+    	return this.gravityDirection.getAxisDirection() == Direction.AxisDirection.POSITIVE ? -coordinate : coordinate;
     }
     
     @Override
@@ -274,13 +364,8 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
 
                 if (node != null && (node.type == BlockPathTypes.OPEN || node.type == BlockPathTypes.WALKABLE) && this.mob.getBbWidth() < 1.0F)
                 {
-                	AABB rawAABB = this.getBoundingBoxForPose(this.mob.getPose());
-                	if(this.gravityDirection.getAxisDirection() == Direction.AxisDirection.POSITIVE)
-                	{
-                		rawAABB = rawAABB.move(0.0D, -1.0E-6D, 0.0D);
-                	}
-                    Vec3 targetPosition = Vec3.atBottomCenterOf(node.asBlockPos());
-                    AABB aabb = RotationUtil.boxPlayerToWorld(rawAABB, this.gravityDirection).move(targetPosition);
+                	AABB rawAABB = this.getBoundingBoxForPose(this.mob.getPose()).move(0.0D, 1.0E-6D, 0.0D);
+                    AABB aabb = RotationUtil.boxPlayerToWorld(rawAABB, this.gravityDirection).move(this.feetIn(node.asBlockPos()));
                     if(this.hasCollisions(aabb))
                     {
                         node = null;
@@ -297,7 +382,7 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
                 }
                 
                 mutablePos.set(currentPos);
-                while(mutablePos.getY() > this.mob.level.getMinBuildHeight())
+                for(int depth = 0; depth < MAX_COLUMN_SCAN; depth++)
                 {
                     mutablePos.move(this.gravityDirection);
                     blockpathtypes = this.getCachedBlockType(this.mob, mutablePos.getX(), mutablePos.getY(), mutablePos.getZ());
@@ -353,13 +438,12 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
         return node;
     }
     
+    /** The pose's box in the gravity frame, feet at the origin. */
     protected AABB getBoundingBoxForPose(Pose p_20218_) 
     {
     	EntityDimensions entitydimensions = this.mob.getDimensions(p_20218_);
     	float f = entitydimensions.width / 2.0F;
-        Vec3 vec3 = new Vec3(this.mob.getX() - (double)f, this.mob.getY(), this.mob.getZ() - (double)f);
-        Vec3 vec31 = new Vec3(this.mob.getX() + (double)f, this.mob.getY() + (double)entitydimensions.height, this.mob.getZ() + (double)f);
-        return new AABB(vec3, vec31);
+        return new AABB(-f, 0.0D, -f, f, entitydimensions.height, f);
     }
     
     @Nullable
@@ -370,8 +454,8 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
     
     private boolean canReachWithoutCollision(Node p_77625_) 
     {
-    	AABB aabb = this.mob.getBoundingBox();
-    	Vec3 vec3 = new Vec3((double)p_77625_.x - this.mob.getX() + aabb.getXsize() / 2.0D, (double)p_77625_.y - this.mob.getY() + aabb.getYsize() / 2.0D, (double)p_77625_.z - this.mob.getZ() + aabb.getZsize() / 2.0D);
+    	AABB aabb = this.mobBox;
+    	Vec3 vec3 = this.feetIn(p_77625_.asBlockPos()).subtract(this.mobFeet);
         int i = Mth.ceil(vec3.length() / aabb.getSize());
         vec3 = vec3.scale((double)(1.0F / (float)i));
         for(int j = 1; j <= i; ++j) 
@@ -414,6 +498,182 @@ public class GravityNodeEvaluator extends WalkNodeEvaluator
     	return p_230626_ == BlockPathTypes.FENCE || p_230626_ == BlockPathTypes.DOOR_WOOD_CLOSED || p_230626_ == BlockPathTypes.DOOR_IRON_CLOSED;
     }
     
+    /** Vanilla's classification, with the body footprint laid out in the gravity frame. */
+    @Override
+    public BlockPathTypes getBlockPathType(BlockGetter level, int x, int y, int z, Mob mob)
+    {
+        EnumSet<BlockPathTypes> types = EnumSet.noneOf(BlockPathTypes.class);
+        BlockPathTypes type = this.getBlockPathTypes(level, x, y, z, types, BlockPathTypes.BLOCKED, this.mobBlock);
+        if(types.contains(BlockPathTypes.FENCE))
+        {
+            return BlockPathTypes.FENCE;
+        }
+        if(types.contains(BlockPathTypes.UNPASSABLE_RAIL))
+        {
+            return BlockPathTypes.UNPASSABLE_RAIL;
+        }
+        BlockPathTypes worst = BlockPathTypes.BLOCKED;
+        for(BlockPathTypes candidate : types)
+        {
+            if(mob.getPathfindingMalus(candidate) < 0.0F)
+            {
+                return candidate;
+            }
+            if(mob.getPathfindingMalus(candidate) >= mob.getPathfindingMalus(worst))
+            {
+                worst = candidate;
+            }
+        }
+        return type == BlockPathTypes.OPEN && mob.getPathfindingMalus(worst) == 0.0F && this.entityWidth <= 1 ? BlockPathTypes.OPEN : worst;
+    }
+
+    @Override
+    public BlockPathTypes getBlockPathTypes(BlockGetter level, int x, int y, int z, EnumSet<BlockPathTypes> output, BlockPathTypes fallback, BlockPos mobPos)
+    {
+        Direction east = this.horizontalDirections[3];
+        Direction south = this.horizontalDirections[1];
+        Direction up = this.gravityDirection.getOpposite();
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for(int i = 0; i < this.entityWidth; ++i)
+        {
+            for(int j = 0; j < this.entityHeight; ++j)
+            {
+                for(int k = 0; k < this.entityDepth; ++k)
+                {
+                    pos.set(x, y, z).move(east, i).move(up, j).move(south, k);
+                    BlockPathTypes type = this.getBlockPathType(level, pos.getX(), pos.getY(), pos.getZ());
+                    type = this.evaluateBlockPathType(level, mobPos, type);
+                    if(i == 0 && j == 0 && k == 0)
+                    {
+                        fallback = type;
+                    }
+                    output.add(type);
+                }
+            }
+        }
+        return fallback;
+    }
+
+    /** Vanilla's walkable test looks one block down in world Y: look along gravity instead. */
+    @Override
+    public BlockPathTypes getBlockPathType(BlockGetter level, int x, int y, int z)
+    {
+        if(this.gravityDirection == Direction.DOWN && !this.shipyard)
+        {
+            return super.getBlockPathType(level, x, y, z);
+        }
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(x, y, z);
+        BlockPathTypes type = this.rawType(level, pos);
+        if(type == BlockPathTypes.OPEN)
+        {
+            BlockPathTypes below = this.rawType(level, pos.move(this.gravityDirection));
+            type = below != BlockPathTypes.WALKABLE && below != BlockPathTypes.OPEN && below != BlockPathTypes.WATER && below != BlockPathTypes.LAVA ? BlockPathTypes.WALKABLE : BlockPathTypes.OPEN;
+            if(below == BlockPathTypes.DAMAGE_FIRE || below == BlockPathTypes.DAMAGE_OTHER || below == BlockPathTypes.STICKY_HONEY || below == BlockPathTypes.DAMAGE_CAUTIOUS)
+            {
+                type = below;
+            }
+            else if(below == BlockPathTypes.POWDER_SNOW)
+            {
+                type = BlockPathTypes.DANGER_POWDER_SNOW;
+            }
+        }
+        if(type == BlockPathTypes.WALKABLE)
+        {
+            type = checkNeighbourBlocks(level, pos.set(x, y, z), type);
+        }
+        return type;
+    }
+
+    /** The block's own path type; in a shipyard bypassing VS2, which replaces it with the type at the matching world position. */
+    private BlockPathTypes rawType(BlockGetter level, BlockPos pos)
+    {
+        return this.shipyard ? rawTypeUnhooked(level, pos) : getBlockPathTypeRaw(level, pos);
+    }
+
+    /** {@link WalkNodeEvaluator#getBlockPathTypeRaw} (Forge 1.20.1), outside VS2's injection. */
+    private static BlockPathTypes rawTypeUnhooked(BlockGetter level, BlockPos pos)
+    {
+        BlockState state = level.getBlockState(pos);
+        BlockPathTypes type = state.getBlockPathType(level, pos, null);
+        if(type != null)
+        {
+            return type;
+        }
+        Block block = state.getBlock();
+        if(state.isAir())
+        {
+            return BlockPathTypes.OPEN;
+        }
+        if(state.is(BlockTags.TRAPDOORS) || state.is(Blocks.LILY_PAD) || state.is(Blocks.BIG_DRIPLEAF))
+        {
+            return BlockPathTypes.TRAPDOOR;
+        }
+        if(state.is(Blocks.POWDER_SNOW))
+        {
+            return BlockPathTypes.POWDER_SNOW;
+        }
+        if(state.is(Blocks.CACTUS) || state.is(Blocks.SWEET_BERRY_BUSH))
+        {
+            return BlockPathTypes.DAMAGE_OTHER;
+        }
+        if(state.is(Blocks.HONEY_BLOCK))
+        {
+            return BlockPathTypes.STICKY_HONEY;
+        }
+        if(state.is(Blocks.COCOA))
+        {
+            return BlockPathTypes.COCOA;
+        }
+        if(state.is(Blocks.WITHER_ROSE) || state.is(Blocks.POINTED_DRIPSTONE))
+        {
+            return BlockPathTypes.DAMAGE_CAUTIOUS;
+        }
+        FluidState fluid = level.getFluidState(pos);
+        BlockPathTypes fluidType = fluid.getBlockPathType(level, pos, null, false);
+        if(fluidType != null)
+        {
+            return fluidType;
+        }
+        if(fluid.is(FluidTags.LAVA))
+        {
+            return BlockPathTypes.LAVA;
+        }
+        if(isBurningBlock(state))
+        {
+            return BlockPathTypes.DAMAGE_FIRE;
+        }
+        if(block instanceof DoorBlock door)
+        {
+            if(state.getValue(DoorBlock.OPEN))
+            {
+                return BlockPathTypes.DOOR_OPEN;
+            }
+            return door.type().canOpenByHand() ? BlockPathTypes.DOOR_WOOD_CLOSED : BlockPathTypes.DOOR_IRON_CLOSED;
+        }
+        if(block instanceof BaseRailBlock)
+        {
+            return BlockPathTypes.RAIL;
+        }
+        if(block instanceof LeavesBlock)
+        {
+            return BlockPathTypes.LEAVES;
+        }
+        if(state.is(BlockTags.FENCES) || state.is(BlockTags.WALLS) || (block instanceof FenceGateBlock && !state.getValue(FenceGateBlock.OPEN)))
+        {
+            return BlockPathTypes.FENCE;
+        }
+        if(!state.isPathfindable(level, pos, PathComputationType.LAND))
+        {
+            return BlockPathTypes.BLOCKED;
+        }
+        BlockPathTypes loggedType = fluid.getBlockPathType(level, pos, null, true);
+        if(loggedType != null)
+        {
+            return loggedType;
+        }
+        return fluid.is(FluidTags.WATER) ? BlockPathTypes.WATER : BlockPathTypes.OPEN;
+    }
+
     private double getMobJumpHeight()
     {
     	return Math.max(1.125D, (double)this.mob.getStepHeight());

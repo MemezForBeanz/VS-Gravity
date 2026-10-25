@@ -24,6 +24,7 @@ public abstract class UseOnContextMixin {
         )
     )
     private float wrapOperation_getPlayerYaw_getYaw_0(Player entity, Operation<Float> original) {
+        if (net.memezforbeanz.gravityapi.placement.PlacementFrame.inputs(entity) != null) return original.call(entity);
         Direction gravityDirection = GravityChangerAPI.getGravityDirection(entity);
         if (gravityDirection == Direction.DOWN) {
             return original.call(entity);

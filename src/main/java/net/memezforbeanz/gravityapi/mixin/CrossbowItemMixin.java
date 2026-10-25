@@ -5,10 +5,12 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
 import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
+import net.memezforbeanz.gravityapi.api.GravityDirection;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
 
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.item.CrossbowItem;
 
 @Mixin(CrossbowItem.class)
@@ -22,12 +24,12 @@ public abstract class CrossbowItemMixin {
         )
     )
     private static double redirect_shoot_getX_0(LivingEntity livingEntity) {
-        Direction gravityDirection = GravityChangerAPI.getGravityDirection(livingEntity);
-        if (gravityDirection == Direction.DOWN) {
+        GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(livingEntity);
+        if (gravityDirection.equals(GravityDirection.DOWN)) {
             return livingEntity.getX();
         }
         
-        return livingEntity.getEyePosition().subtract(RotationUtil.vecPlayerToWorld(0.0D, 0.15000000596046448D, 0.0D, gravityDirection)).x;
+        return livingEntity.getEyePosition().subtract(RotationUtil.vecPlayerToWorld(new Vec3(0.0D, 0.15000000596046448D, 0.0D), gravityDirection)).x;
     }
     
     @Redirect(
@@ -39,12 +41,12 @@ public abstract class CrossbowItemMixin {
         )
     )
     private static double redirect_shoot_getEyeY_0(LivingEntity livingEntity) {
-        Direction gravityDirection = GravityChangerAPI.getGravityDirection(livingEntity);
-        if (gravityDirection == Direction.DOWN) {
+        GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(livingEntity);
+        if (gravityDirection.equals(GravityDirection.DOWN)) {
             return livingEntity.getEyeY();
         }
         
-        return livingEntity.getEyePosition().subtract(RotationUtil.vecPlayerToWorld(0.0D, 0.15000000596046448D, 0.0D, gravityDirection)).y + 0.15000000596046448D;
+        return livingEntity.getEyePosition().subtract(RotationUtil.vecPlayerToWorld(new Vec3(0.0D, 0.15000000596046448D, 0.0D), gravityDirection)).y + 0.15000000596046448D;
     }
     
     @Redirect(
@@ -56,11 +58,11 @@ public abstract class CrossbowItemMixin {
         )
     )
     private static double redirect_shoot_getZ_0(LivingEntity livingEntity) {
-        Direction gravityDirection = GravityChangerAPI.getGravityDirection(livingEntity);
-        if (gravityDirection == Direction.DOWN) {
+        GravityDirection gravityDirection = GravityChangerAPI.getGravityDirectionVec(livingEntity);
+        if (gravityDirection.equals(GravityDirection.DOWN)) {
             return livingEntity.getZ();
         }
         
-        return livingEntity.getEyePosition().subtract(RotationUtil.vecPlayerToWorld(0.0D, 0.15000000596046448D, 0.0D, gravityDirection)).z;
+        return livingEntity.getEyePosition().subtract(RotationUtil.vecPlayerToWorld(new Vec3(0.0D, 0.15000000596046448D, 0.0D), gravityDirection)).z;
     }
 }

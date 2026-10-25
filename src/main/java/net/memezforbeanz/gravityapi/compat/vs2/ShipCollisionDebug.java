@@ -5,23 +5,15 @@ import net.minecraft.world.entity.player.Player;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Centralized, throttled logging for the VS2 ship-local gravity collision path.
- *
- * <p>Toggle {@link #ENABLED} to turn the (fairly verbose) diagnostics on/off. Logging is throttled
- * per-entity by tick count so we get a readable burst once per {@link #LOG_INTERVAL_TICKS} ticks
- * instead of flooding the console every physics sub-step.
- */
+/** Throttled logging for the ship gravity collision path, enabled by {@link #ENABLED} or the {@code debugShipCollision} config option (players only). */
 public final class ShipCollisionDebug {
 
     public static final Logger LOG = LoggerFactory.getLogger("VSGravityCollision");
 
-    /** Master switch for ship-collision diagnostics. Keep off in releases: when on it logs every
-     * collision sub-step on the server AND render threads (tens of thousands of lines per session,
-     * measurable tick cost + GC churn). */
+    /** Master switch for all entities. Very verbose: keep off in releases. */
     public static boolean ENABLED = false;
 
-    /** Extra-verbose per-substep logs (detection, ctx transforms, status). Off by default. */
+    /** Extra-verbose per-substep logs. */
     public static boolean VERBOSE = false;
 
     /** How often (in ticks) a given entity is allowed to log. */
@@ -30,10 +22,7 @@ public final class ShipCollisionDebug {
     private ShipCollisionDebug() {
     }
 
-    /**
-     * Whether the given entity should log this tick. Gated to keep spam down; logs a burst (all of
-     * a tick's collision sub-steps) once per {@link #LOG_INTERVAL_TICKS}.
-     */
+    /** Whether the entity logs this tick (once per {@link #LOG_INTERVAL_TICKS}). */
     public static boolean shouldLog(Entity entity) {
         if (entity == null || entity.tickCount % LOG_INTERVAL_TICKS != 0) {
             return false;
@@ -41,10 +30,7 @@ public final class ShipCollisionDebug {
         return ENABLED || (entity instanceof Player && configEnabled());
     }
 
-    /**
-     * Like {@link #shouldLog(Entity)} but only for players - used for high-frequency call sites
-     * (e.g. ship detection, which runs for every gravity-capable entity) to avoid mob spam.
-     */
+    /** {@link #shouldLog(Entity)} for players only, for call sites that run for every entity. */
     public static boolean shouldLogPlayer(Entity entity) {
         return entity instanceof Player && shouldLog(entity);
     }
@@ -54,10 +40,7 @@ public final class ShipCollisionDebug {
         return VERBOSE && shouldLog(entity);
     }
 
-    /**
-     * The player-only {@code debugShipCollision} option, read live: in-game config screens
-     * change the value in memory without firing a reload event, so it can't be mirrored.
-     */
+    /** The {@code debugShipCollision} option, read live (config screens change it without a reload event). */
     private static boolean configEnabled() {
         try {
             return net.memezforbeanz.gravityapi.config.GravityConfig.debugShipCollision.get();

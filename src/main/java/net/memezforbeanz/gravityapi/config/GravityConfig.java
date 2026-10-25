@@ -25,6 +25,8 @@ public class GravityConfig
 	public static ForgeConfigSpec.DoubleValue maxTerrainStandAngle;
 	public static ForgeConfigSpec.IntValue effectLingerTicks;
 	public static ForgeConfigSpec.BooleanValue debugShipCollision;
+	public static ForgeConfigSpec.BooleanValue fieldFreeFall;
+	public static ForgeConfigSpec.DoubleValue fieldTiltSeconds;
 
     static 
     {
@@ -46,9 +48,11 @@ public class GravityConfig
     	GravityConfig.adjustPositionAfterChangingGravity = config.comment("adjust position after gravity change").define("adjustPositionAfterChangingGravity", true);
     	GravityConfig.maxGravityChangeAngle = config.comment("maximum angle change (in degrees) allowed per tick for gravity direction. Set to 180 for no limit.").defineInRange("maxGravityChangeAngle", 90.0, 0.0, 180.0);
     	GravityConfig.smoothArbitraryGravity = config.comment("enable smooth arbitrary gravity for VS ships (allows non-cardinal directions)").define("smoothArbitraryGravity", true);
-    	GravityConfig.maxTerrainStandAngle = config.comment("maximum angle (in degrees) between arbitrary gravity and the world terrain's up direction at which entities can still stand on terrain without sliding. Beyond this the surface behaves like a too-steep slope.").defineInRange("maxTerrainStandAngle", 60.0, 0.0, 90.0);
+    	GravityConfig.maxTerrainStandAngle = config.comment("maximum angle (degrees) between arbitrary gravity and world up at which entities still stand on terrain; steeper surfaces are slid off").defineInRange("maxTerrainStandAngle", 60.0, 0.0, 90.0);
     	GravityConfig.effectLingerTicks = config.comment("how many ticks a gravity effect (generator field, plate, anchor) is held after it stops being applied. Smooths flicker at field boundaries; 0 disables.").defineInRange("effectLingerTicks", 5, 0, 40);
     	GravityConfig.debugShipCollision = config.comment("log every ship-gravity collision step for players to latest.log (tag VSGravityCollision). Diagnostics only: very verbose; can be toggled while the game runs.").define("debugShipCollision", false);
+    	GravityConfig.fieldFreeFall = config.comment("Mario Galaxy style fields: away from any surface, an entity keeps its gravity frame and falls along the field's pull, its view slowly tilting toward the face it will land on. Off: fields flip gravity straight away").define("fieldFreeFall", true);
+    	GravityConfig.fieldTiltSeconds = config.comment("seconds a field free fall takes to tilt the view 90 degrees toward its landing face").defineInRange("fieldTiltSeconds", 1.5, 0.05, 60.0);
         config.pop();
     }
 }

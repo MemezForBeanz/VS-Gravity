@@ -3,10 +3,12 @@ package net.memezforbeanz.gravityapi.mixin;
 
 import org.joml.Vector3f;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
 import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
+import net.memezforbeanz.gravityapi.api.ProjectileGravity;
 import net.memezforbeanz.gravityapi.util.RotationUtil;
 
 import net.minecraft.core.Direction;
@@ -28,6 +30,17 @@ public abstract class PiglinMixin implements CrossbowAttackMob {
         )
     )
     private void redirect_shoot_shoot_0(Piglin piglinEntity, LivingEntity entity, LivingEntity target, Projectile projectile, float multishotSpray, float speed) {
+        // The gravity-aware aim (ProjectileGravity.aimShot) re-applies the multishot angle to its solved shot
+        ProjectileGravity.MULTISHOT_ANGLE.set(multishotSpray);
+        try {
+            gravityapi$shoot(piglinEntity, entity, target, projectile, multishotSpray, speed);
+        } finally {
+            ProjectileGravity.MULTISHOT_ANGLE.remove();
+        }
+    }
+
+    @Unique
+    private void gravityapi$shoot(Piglin piglinEntity, LivingEntity entity, LivingEntity target, Projectile projectile, float multishotSpray, float speed) {
         Direction gravityDirection = GravityChangerAPI.getGravityDirection(target);
         if (gravityDirection == Direction.DOWN) {
             this.shootCrossbowProjectile(entity, target, projectile, multishotSpray, speed);

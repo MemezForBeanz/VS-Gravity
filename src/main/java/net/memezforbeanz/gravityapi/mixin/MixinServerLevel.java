@@ -9,6 +9,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import net.memezforbeanz.gravityapi.api.GravityChangerAPI;
 import net.memezforbeanz.gravityapi.util.GCUtil;
+import net.memezforbeanz.gravityapi.util.PendingGravityAim;
 
 import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
@@ -29,6 +30,15 @@ public abstract class MixinServerLevel extends Level
 		super(p_220352_, p_220353_, p_270200_, p_220354_, p_220355_, p_220356_, p_220357_, p_220358_, p_220359_);
 	}
 	
+	@Inject(at = @At("HEAD"), method = "addFreshEntity")
+	private void gravityapi$aimFireball(Entity entity, CallbackInfoReturnable<Boolean> ci)
+	{
+		if (entity instanceof PendingGravityAim pending)
+		{
+			pending.gravityapi$aimNow();
+		}
+	}
+
 	@Inject(at = @At("HEAD"), method = "addFreshEntity")
 	private void addFreshEntity(Entity p_8837_, CallbackInfoReturnable<Boolean> ci)
 	{

@@ -34,6 +34,10 @@ public class GravityMixinPlugin implements IMixinConfigPlugin
 		{
 			return false;
 		}
+		if(mixinClassName.equals("net.memezforbeanz.gravityapi.mixin.compat.MutantEndermanMixin") && LoadingModList.get().getModFileById("mutantmonsters") == null)
+		{
+			return false;
+		}
 		if(mixinClassName.equals("net.memezforbeanz.gravityapi.mixin.compat.CosmosGravityProcedureMixin") && LoadingModList.get().getModFileById("cosmos") == null)
 		{
 			return false;
@@ -46,6 +50,8 @@ public class GravityMixinPlugin implements IMixinConfigPlugin
 		{
 			return false;
 		}
+		if (mixinClassName.endsWith(".VS2RotationRelocationMixin") && LoadingModList.get().getModFileById("valkyrienskies") == null) return false;
+		if (mixinClassName.contains(".rotation.Embeddium") && LoadingModList.get().getModFileById("embeddium") == null) return false;
 		return true;
 	}
 

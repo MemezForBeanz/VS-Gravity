@@ -193,14 +193,14 @@ public abstract class RotationUtil {
     }
     
     public static Vec2 vecToRot(double x, double y, double z) {
-        double sinPitch = -y;
-        double radPitch = Math.asin(sinPitch);
-        double cosPitch = Math.cos(radPitch);
-        double sinNegYaw = x / cosPitch;
-        double cosNegYaw = Mth.clamp(z / cosPitch, -1, 1);
-        double radNegYaw = Math.acos(cosNegYaw);
-        if (sinNegYaw < 0) radNegYaw = Math.PI * 2 - radNegYaw;
-        
+        // Normalized and clamped: float rotation can overshoot unit length, and asin(>1) is NaN
+        double length = Math.sqrt(x * x + y * y + z * z);
+        if (length < 1.0E-9) {
+            return Vec2.ZERO;
+        }
+        double radPitch = Math.asin(Mth.clamp(-y / length, -1, 1));
+        // atan2: no division by cos(pitch)
+        double radNegYaw = Math.atan2(x, z);
         return new Vec2(Mth.wrapDegrees((float) (-radNegYaw) / 0.017453292F), (float) (radPitch) / 0.017453292F);
     }
     
@@ -274,85 +274,56 @@ public abstract class RotationUtil {
         return boxPlayerToWorld(rawBox, gravityDir).move(pos);
     }
 
-    // ========== ARBITRARY GRAVITY DIRECTION METHODS ==========
-    // These methods support any gravity angle using quaternion-based rotation
+    // Arbitrary gravity directions (quaternion based)
 
-    /**
-     * Transform a vector from world space to player space using arbitrary gravity
-     * Always uses quaternion-based rotation for accurate VS ship support
-     */
+    /** World space to player space. */
     public static Vec3 vecWorldToPlayer(Vec3 vec, GravityDirection gravity) {
         return gravity.vecWorldToPlayer(vec);
     }
 
-    /**
-     * Transform a vector from player space to world space using arbitrary gravity
-     * Always uses quaternion-based rotation for accurate VS ship support
-     */
+    /** Player space to world space. */
     public static Vec3 vecPlayerToWorld(Vec3 vec, GravityDirection gravity) {
         return gravity.vecPlayerToWorld(vec);
     }
 
-    /**
-     * Transform a vector from world space to player space using arbitrary gravity
-     * Always uses quaternion-based rotation for accurate VS ship support
-     */
+    /** World space to player space. */
     public static Vector3f vecWorldToPlayer(Vector3f vec, GravityDirection gravity) {
         return gravity.vecWorldToPlayer(vec);
     }
 
-    /**
-     * Transform a vector from player space to world space using arbitrary gravity
-     * Always uses quaternion-based rotation for accurate VS ship support
-     */
+    /** Player space to world space. */
     public static Vector3f vecPlayerToWorld(Vector3f vec, GravityDirection gravity) {
         return gravity.vecPlayerToWorld(vec);
     }
 
-    /**
-     * Get the world rotation quaternion for arbitrary gravity
-     * Always uses the exact quaternion for accurate VS ship support
-     */
+    /** The world rotation quaternion (rotates the world for rendering). */
     public static Quaternionf getWorldRotationQuaternion(GravityDirection gravity) {
         return gravity.getWorldToPlayerRotation();
     }
 
-    /**
-     * Get the camera/entity rotation quaternion for arbitrary gravity
-     * Always uses the exact quaternion for accurate VS ship support
-     */
+    /** The camera/entity rotation quaternion. */
     public static Quaternionf getCameraRotationQuaternion(GravityDirection gravity) {
         return gravity.getPlayerToWorldRotation();
     }
 
-    /**
-     * Transform rotation (yaw, pitch) from world to player space for arbitrary gravity
-     * Always uses quaternion-based rotation for accurate VS ship support
-     */
+    /** Yaw and pitch from world to player space. */
     public static Vec2 rotWorldToPlayer(float yaw, float pitch, GravityDirection gravity) {
         Vec3 vec3d = gravity.vecWorldToPlayer(rotToVec(yaw, pitch));
         return vecToRot(vec3d.x, vec3d.y, vec3d.z);
     }
 
-    /**
-     * Transform rotation (yaw, pitch) from player to world space for arbitrary gravity
-     * Always uses quaternion-based rotation for accurate VS ship support
-     */
+    /** Yaw and pitch from player to world space. */
     public static Vec2 rotPlayerToWorld(float yaw, float pitch, GravityDirection gravity) {
         Vec3 vec3d = gravity.vecPlayerToWorld(rotToVec(yaw, pitch));
         return vecToRot(vec3d.x, vec3d.y, vec3d.z);
     }
 
-    /**
-     * Transform a bounding box from world to player space for arbitrary gravity
-     * Properly handles quaternion rotation by rotating all 8 corners
-     */
+    /** A world-space box to player space (all 8 corners rotated). */
     public static AABB boxWorldToPlayer(AABB box, GravityDirection gravity) {
         if (gravity.isCardinal()) {
             return boxWorldToPlayer(box, gravity.getNearestDirection());
         }
 
-        // For arbitrary rotation, rotate all 8 corners and find new min/max
         Vec3[] corners = new Vec3[] {
             new Vec3(box.minX, box.minY, box.minZ),
             new Vec3(box.minX, box.minY, box.maxZ),
@@ -380,16 +351,12 @@ public abstract class RotationUtil {
         return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
     }
 
-    /**
-     * Transform a bounding box from player to world space for arbitrary gravity
-     * Properly handles quaternion rotation by rotating all 8 corners
-     */
+    /** A player-space box to world space (all 8 corners rotated). */
     public static AABB boxPlayerToWorld(AABB box, GravityDirection gravity) {
         if (gravity.isCardinal()) {
             return boxPlayerToWorld(box, gravity.getNearestDirection());
         }
 
-        // For arbitrary rotation, rotate all 8 corners and find new min/max
         Vec3[] corners = new Vec3[] {
             new Vec3(box.minX, box.minY, box.minZ),
             new Vec3(box.minX, box.minY, box.maxZ),
@@ -417,18 +384,13 @@ public abstract class RotationUtil {
         return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
     }
 
-    /**
-     * Make a bounding box from dimensions for arbitrary gravity
-     * Always uses quaternion-based rotation for accurate VS ship support
-     */
+    /** A bounding box from dimensions under the given gravity. */
     public static AABB makeBoxFromDimensions(EntityDimensions dimensions, GravityDirection gravity, Vec3 pos) {
         AABB rawBox = dimensions.makeBoundingBox(0, 0, 0);
         return boxPlayerToWorld(rawBox, gravity).move(pos);
     }
 
-    /**
-     * Get the rotation quaternion between two arbitrary gravity directions
-     */
+    /** The rotation between two gravity directions. */
     public static Quaternionf getRotationBetween(GravityDirection g1, GravityDirection g2) {
         Vec3 v1 = g1.getVector();
         Vec3 v2 = g2.getVector();

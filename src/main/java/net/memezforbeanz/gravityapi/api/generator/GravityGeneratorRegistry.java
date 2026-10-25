@@ -19,22 +19,15 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Registry for active gravity generators.
- * <p>
- * Any {@link AbstractGravityGeneratorBlockEntity} registers itself here while active;
- * entities query it every tick to find the gravity field affecting them. Field radius,
- * priority, rotation parameters and gravity direction all come from the individual
- * generator, so mods extending the abstract classes get their overrides applied
- * automatically.
+ * Registry of active gravity generators. Each {@link AbstractGravityGeneratorBlockEntity}
+ * registers while active; entities query it every tick. Radius, priority, rotation parameters
+ * and direction come from the generator.
  */
 public class GravityGeneratorRegistry {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("GravityGeneratorRegistry");
 
-    /**
-     * Map of level -> set of active gravity generator positions.
-     * Maintained separately per logical side (server/client levels are distinct objects).
-     */
+    /** Active generator positions per level (client and server levels are separate objects). */
     private static final Map<Level, Set<BlockPos>> ACTIVE_GENERATORS = new ConcurrentHashMap<>();
 
     /**
@@ -74,12 +67,8 @@ public class GravityGeneratorRegistry {
     }
 
     /**
-     * Check if an entity is in a gravity field and get the gravity direction.
-     * This is called during the entity's gravity update event.
-     * When multiple fields overlap, the closest generator wins.
-     *
-     * @param entity The entity to check
-     * @return The gravity field result if in a field, null otherwise
+     * The gravity field affecting an entity, or null; the closest generator wins where fields overlap.
+     * Called from the entity's gravity update.
      */
     @Nullable
     public static GravityFieldResult getGravityFieldEffect(Entity entity) {
